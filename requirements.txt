@@ -1,0 +1,71 @@
+# ──────────────────────────────────────────────────────────────
+# requirements.txt — Head-Mounted Navigation Assistant
+# ──────────────────────────────────────────────────────────────
+# Install on laptop (training):
+#   pip install -r requirements.txt
+#
+# Install on RPi 4B (inference only - smaller subset):
+#   pip install -r requirements.txt --extra-index-url https://www.piwheels.org/simple
+#   (piwheels has pre-built ARM wheels for numpy, opencv, etc.)
+# ──────────────────────────────────────────────────────────────
+
+# ── YOLO and Computer Vision ──────────────────────────────────
+ultralytics>=8.2.0         # YOLOv8: training, export, validation
+opencv-python-headless>=4.8.0  # Use headless on RPi (no GUI dependency)
+Pillow>=10.0.0
+
+# ── ONNX: Export and Runtime ─────────────────────────────────
+onnx>=1.15.0               # ONNX model format
+onnxruntime>=1.17.0        # CPU inference (RPi) — do NOT use onnxruntime-gpu on RPi
+onnxsim>=0.4.35            # ONNX simplifier (run after export for cleaner graph)
+
+# NOTE for RPi: install onnxruntime from piwheels:
+#   pip install onnxruntime --extra-index-url https://www.piwheels.org/simple
+
+# ── Quantization ─────────────────────────────────────────────
+onnxruntime-tools>=1.7.0   # Includes quantize_static, calibration tools
+
+# ── Tracking & Detection Utilities ───────────────────────────
+supervision>=0.20.0        # ByteTracker, Detections, utility classes
+# Note: supervision.ByteTracker can replace the custom SimpleTracker
+# in navigation_system_rpi.py for production use.
+
+# ── Voice / Audio ─────────────────────────────────────────────
+pyttsx3>=2.90              # Offline TTS (fallback)
+gTTS>=2.4.0                # Google TTS (better voice quality, needs internet once)
+pygame>=2.5.0              # Fast WAV/MP3 playback for pre-recorded commands
+# playsound>=1.3.0         # Alternative lightweight audio player
+
+# espeak: install via apt, not pip
+#   sudo apt install espeak espeak-data libespeak1
+
+# ── Data & Math ──────────────────────────────────────────────
+numpy>=1.24.0
+scipy>=1.11.0              # Used in some smoothing utilities
+
+# ── Training & Evaluation ────────────────────────────────────
+torch>=2.0.0               # PyTorch — LAPTOP ONLY (skip on RPi)
+torchvision>=0.15.0        # LAPTOP ONLY
+
+# ── Dataset Handling ─────────────────────────────────────────
+requests>=2.31.0           # Dataset download
+tqdm>=4.66.0               # Progress bars
+
+# ── Logging & Reporting ──────────────────────────────────────
+pandas>=2.0.0              # CSV logging and benchmark tables
+matplotlib>=3.7.0          # Plotting (confusion matrix, training curves)
+seaborn>=0.13.0            # Enhanced plots
+
+# ── Utilities ────────────────────────────────────────────────
+psutil>=5.9.0              # System monitoring (CPU, memory)
+PyYAML>=6.0.1              # dataset.yaml parsing
+
+# ──────────────────────────────────────────────────────────────
+# RPi 4B MINIMAL INSTALL (inference-only):
+# ──────────────────────────────────────────────────────────────
+# pip install numpy opencv-python-headless onnxruntime supervision \
+#             pyttsx3 pygame gTTS psutil PyYAML \
+#             --extra-index-url https://www.piwheels.org/simple
+#
+# sudo apt install -y espeak espeak-data python3-pyaudio portaudio19-dev
+# ──────────────────────────────────────────────────────────────
