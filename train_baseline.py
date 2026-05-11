@@ -4,12 +4,16 @@ train_baseline.py
 Fine-tunes YOLOv8n (pre-trained on COCO) on the Cityscapes dataset
 for sidewalk and obstacle navigation.
 
-Run on laptop/workstation with GPU recommended.
+Optimized for maximum robustness while maintaining RPi deployability.
+Trains at 416×416 for richer features, then quantizes to 320×320 for inference.
+
+Run on Kaggle GPU (recommended) or laptop with GPU.
 
 Usage:
     python train_baseline.py
-    python train_baseline.py --epochs 50 --device cuda:0
+    python train_baseline.py --epochs 120 --device cuda:0
     python train_baseline.py --resume   # Resume interrupted run
+    python train_baseline.py --imgsz 416 --batch 32  # Kaggle GPU settings
 """
 
 import os
@@ -22,13 +26,13 @@ from pathlib import Path
 # CONFIGURATION
 # ──────────────────────────────────────────────
 
-DEFAULT_EPOCHS      = 80
-DEFAULT_BATCH       = 16          # Reduce to 8 if you get OOM errors
-DEFAULT_IMGSZ       = 320         # Target resolution for RPi inference
+DEFAULT_EPOCHS      = 120         # More epochs for thorough convergence (early stopping will cut short if needed)
+DEFAULT_BATCH       = 32          # Use 32 on Kaggle T4/P100; reduce to 16 or 8 if OOM
+DEFAULT_IMGSZ       = 416         # Train at 416 for richer feature learning; quantize to 320 for RPi
 DEFAULT_LR0         = 1e-3        # Initial learning rate
-DEFAULT_LRF         = 0.01        # Final LR fraction
-DEFAULT_WARMUP      = 3           # Warmup epochs
-DEFAULT_PATIENCE    = 20          # Early stopping patience
+DEFAULT_LRF         = 0.01        # Final LR fraction (cosine decay)
+DEFAULT_WARMUP      = 5           # Longer warmup for stable early gradients
+DEFAULT_PATIENCE    = 25          # Generous patience — let the model converge fully
 
 MODEL_BASE          = "yolov8n.pt"
 DATASET_YAML        = "./data/yolo_cityscapes/dataset.yaml"
@@ -79,14 +83,16 @@ def detect_device(requested: str) -> str:
         return "cpu"
 
 
-def estimate_time(epochs: int, device: str) -> str:
+def estimate_time(epochs: int, device: str, imgsz: int = 416) -> str:
     """Rough training time estimate."""
+    # Scale factor for larger image sizes
+    scale = (imgsz / 320) ** 2
     if device == "cpu":
-        mins_per_epoch = 20
+        mins_per_epoch = 20 * scale
     elif device == "mps":
-        mins_per_epoch = 5
+        mins_per_epoch = 5 * scale
     else:
-        mins_per_epoch = 1.5
+        mins_per_epoch = 1.5 * scale   # ~2.5 min/epoch at 416 on T4
     total = epochs * mins_per_epoch
     return f"~{total/60:.1f} hours" if total > 90 else f"~{int(total)} minutes"
 
@@ -101,14 +107,15 @@ def train(args) -> Path:
 
     device = detect_device(args.device)
 
-    banner("BASELINE TRAINING: YOLOv8n → Cityscapes")
+    banner("BASELINE TRAINING: YOLOv8n → Cityscapes (Optimized)")
     print(f"  Model:    {args.model}")
     print(f"  Dataset:  {args.data}")
     print(f"  Epochs:   {args.epochs}")
     print(f"  Batch:    {args.batch}")
-    print(f"  ImgSz:    {args.imgsz}×{args.imgsz}")
+    print(f"  ImgSz:    {args.imgsz}×{args.imgsz} (train) → 320×320 (RPi inference)")
     print(f"  Device:   {device}")
-    print(f"  Est. time:{estimate_time(args.epochs, device)}")
+    print(f"  Est. time:{estimate_time(args.epochs, device, args.imgsz)}")
+    print(f"  Augments: mosaic+mixup+copy_paste+erasing (robust mode)")
 
     FINAL_MODEL.parent.mkdir(parents=True, exist_ok=True)
 
@@ -130,17 +137,29 @@ def train(args) -> Path:
         warmup_epochs   = DEFAULT_WARMUP,
         patience        = DEFAULT_PATIENCE,
         resume          = args.resume,
+        cos_lr          = True,          # Cosine LR decay — smoother convergence than step decay
 
-        # Augmentation for navigation diversity
+        # ── Robust Augmentation Suite ──────────────────
+        # Stronger augmentation = more generalization = fewer false detections on RPi
         hsv_h           = 0.015,
         hsv_s           = 0.7,
         hsv_v           = 0.4,
-        degrees         = 0.0,    # No rotation (camera is head-mounted, ~level)
-        translate       = 0.1,
+        degrees         = 0.0,           # No rotation (head-mounted camera is level)
+        translate       = 0.15,          # ↑ from 0.1: more spatial diversity
         scale           = 0.5,
+        shear           = 0.0,           # No shear for navigation context
+        perspective     = 0.0,           # No perspective warp
         fliplr          = 0.5,
-        mosaic          = 1.0,
-        mixup           = 0.1,
+        flipud          = 0.0,           # Never flip vertically (sky≠ground)
+        mosaic          = 1.0,           # Always mosaic for diverse scenes
+        mixup           = 0.15,          # ↑ from 0.1: helps generalize across scenes
+        copy_paste      = 0.1,           # Paste objects across images for rare-class boost
+        erasing         = 0.2,           # Random erasing for occlusion robustness
+
+        # ── Multi-Scale Training ───────────────────────
+        # Randomly varies input size each batch between 0.5× and 1.5× imgsz
+        # This makes the model robust to objects at varying distances
+        multi_scale     = True,
 
         # Save settings
         save            = True,
@@ -267,7 +286,7 @@ def main():
             print(f"  [WARN] Confusion matrix generation failed: {e}")
 
     banner("NEXT STEP")
-    print(f"  Run quantization and QAT:")
+    print(f"  Run quantization and QAT (will compress to 320×320 INT8 for RPi):")
     print(f"    python quantize_and_qat.py --model {model_path}\n")
 
     return metrics
