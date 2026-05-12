@@ -325,7 +325,11 @@ def train_model(data_yaml):
     device = "0" if torch.cuda.is_available() else "cpu"
     if torch.cuda.is_available():
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
-        print(f"  VRAM: {torch.cuda.get_device_properties(0).total_mem/1e9:.1f} GB")
+        try:
+            vram = torch.cuda.get_device_properties(0).total_memory / 1e9
+            print(f"  VRAM: {vram:.1f} GB")
+        except Exception:
+            print("  VRAM: (could not detect)")
     else:
         print("  ⚠ No GPU — training will be slow!")
 
