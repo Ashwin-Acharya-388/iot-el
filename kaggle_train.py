@@ -240,8 +240,8 @@ def build_yolo_dataset(extract_dir, val_fraction=0.2):
     # Write dataset.yaml
     yaml_content = f"""# Cityscapes YOLO dataset (Kaggle)
 path: {YOLO_DIR.resolve()}
-train: images/train
-val:   images/val
+train: {YOLO_DIR.resolve()}/images/train
+val:   {YOLO_DIR.resolve()}/images/val
 
 nc: {len(YOLO_CLASS_NAMES)}
 names: {YOLO_CLASS_NAMES}
@@ -290,6 +290,7 @@ def train_model(data_yaml):
         warmup_epochs   = 5,
         patience        = 25,
         cos_lr          = True,
+        workers         = 2,             # Prevent Kaggle shared memory (Bus Error) crashes
 
         # Robust augmentations
         hsv_h           = 0.015,
