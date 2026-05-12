@@ -73,19 +73,65 @@ YOLO_CLASS_NAMES = list(CITYSCAPES_CLASSES.keys())
 
 
 # ──────────────────────────────────────────────
-# STEP 1: FIND AND EXTRACT CITYSCAPES DATA
+# STEP 1: FIND CITYSCAPES DATA (zips OR pre-extracted)
 # ──────────────────────────────────────────────
 
-def find_cityscapes():
-    """Locate Cityscapes zip files from Kaggle dataset input."""
+def find_cityscapes_data():
+    """
+    Locate Cityscapes data from Kaggle dataset input.
+    Kaggle auto-extracts uploaded zips, so we check for:
+      1. Pre-extracted directories (leftImg8bit/, gtFine/)
+      2. Zip files as fallback
+    Returns the path to the directory containing leftImg8bit/ and gtFine/.
+    """
     print("="*60)
     print("  STEP 1: LOCATING CITYSCAPES DATASET")
     print("="*60)
 
+    # Debug: show what's in /kaggle/input/
+    print("\n  Scanning /kaggle/input/ ...")
+    for p in sorted(KAGGLE_INPUT.iterdir()):
+        print(f"    📁 {p.name}/")
+        if p.is_dir():
+            for child in sorted(p.iterdir()):
+                if child.is_dir():
+                    print(f"       📁 {child.name}/")
+                else:
+                    sz = child.stat().st_size / 1e6
+                    print(f"       📄 {child.name} ({sz:.0f} MB)")
+
+    # ── Strategy 1: Look for pre-extracted directories ──
+    # Kaggle auto-extracts zips, so leftImg8bit/ and gtFine/ may already exist
+    for input_dir in KAGGLE_INPUT.iterdir():
+        if not input_dir.is_dir():
+            continue
+
+        img_dir = None
+        ann_dir = None
+
+        # Check direct children
+        for child in input_dir.rglob("leftImg8bit"):
+            if child.is_dir():
+                img_dir = child.parent  # parent contains both leftImg8bit/ and gtFine/
+                break
+        for child in input_dir.rglob("gtFine"):
+            if child.is_dir():
+                ann_dir = child.parent
+                break
+
+        if img_dir and ann_dir:
+            # Found pre-extracted data
+            # Use the common parent (they should be the same)
+            extract_dir = img_dir
+            print(f"\n  ✓ Found pre-extracted Cityscapes data!")
+            print(f"    leftImg8bit/ at: {extract_dir / 'leftImg8bit'}")
+            print(f"    gtFine/ at:      {extract_dir / 'gtFine'}")
+            return extract_dir, None, None  # No zips needed
+
+    # ── Strategy 2: Look for zip files ──
     img_zip = None
     ann_zip = None
 
-    # Search all Kaggle input directories
     for p in KAGGLE_INPUT.rglob("*.zip"):
         name = p.name.lower()
         if "leftimg8bit" in name:
@@ -93,7 +139,6 @@ def find_cityscapes():
         elif "gtfine" in name:
             ann_zip = p
 
-    # Also check working directory
     for p in KAGGLE_WORK.glob("*.zip"):
         name = p.name.lower()
         if "leftimg8bit" in name:
@@ -101,27 +146,21 @@ def find_cityscapes():
         elif "gtfine" in name:
             ann_zip = p
 
-    if img_zip:
-        print(f"  ✓ Images: {img_zip} ({img_zip.stat().st_size/1e9:.1f} GB)")
-    else:
-        print("  ✗ leftImg8bit_trainvaltest.zip NOT FOUND")
+    if img_zip and ann_zip:
+        print(f"\n  ✓ Images zip: {img_zip} ({img_zip.stat().st_size/1e9:.1f} GB)")
+        print(f"  ✓ Annotations zip: {ann_zip} ({ann_zip.stat().st_size/1e6:.0f} MB)")
+        return None, img_zip, ann_zip  # Need extraction
 
-    if ann_zip:
-        print(f"  ✓ Annotations: {ann_zip} ({ann_zip.stat().st_size/1e6:.0f} MB)")
-    else:
-        print("  ✗ gtFine_trainvaltest.zip NOT FOUND")
-
-    if not img_zip or not ann_zip:
-        print("\n  [ERROR] Cityscapes dataset not found!")
-        print("  Upload both zip files as a Kaggle Dataset first.")
-        print("  See README for instructions.")
-        sys.exit(1)
-
-    return img_zip, ann_zip
+    # ── Nothing found ──
+    print("\n  ✗ Could not find Cityscapes data (neither extracted dirs nor zip files)")
+    print("\n  [ERROR] Cityscapes dataset not found!")
+    print("  Make sure you added 'iot-el-dataset' as an Input to this notebook.")
+    print("  Click '+ Add Input' in the right sidebar.")
+    sys.exit(1)
 
 
 def extract_cityscapes(img_zip, ann_zip):
-    """Extract Cityscapes archives."""
+    """Extract Cityscapes zip archives (only needed if zips found)."""
     extract_dir = DATA_ROOT / "cityscapes"
 
     if (extract_dir / "leftImg8bit").exists() and (extract_dir / "gtFine").exists():
@@ -240,8 +279,8 @@ def build_yolo_dataset(extract_dir, val_fraction=0.2):
     # Write dataset.yaml
     yaml_content = f"""# Cityscapes YOLO dataset (Kaggle)
 path: {YOLO_DIR.resolve()}
-train: {YOLO_DIR.resolve()}/images/train
-val:   {YOLO_DIR.resolve()}/images/val
+train: images/train
+val:   images/val
 
 nc: {len(YOLO_CLASS_NAMES)}
 names: {YOLO_CLASS_NAMES}
@@ -290,7 +329,6 @@ def train_model(data_yaml):
         warmup_epochs   = 5,
         patience        = 25,
         cos_lr          = True,
-        workers         = 2,             # Prevent Kaggle shared memory (Bus Error) crashes
 
         # Robust augmentations
         hsv_h           = 0.015,
@@ -459,11 +497,12 @@ def main():
     print("  HEAD-MOUNTED NAVIGATION — KAGGLE TRAINING PIPELINE")
     print("="*60 + "\n")
 
-    # Step 1: Find dataset
-    img_zip, ann_zip = find_cityscapes()
+    # Step 1: Find dataset (pre-extracted or zips)
+    extract_dir, img_zip, ann_zip = find_cityscapes_data()
 
-    # Step 2: Extract
-    extract_dir = extract_cityscapes(img_zip, ann_zip)
+    # Step 2: Extract only if we found zips (not pre-extracted)
+    if extract_dir is None:
+        extract_dir = extract_cityscapes(img_zip, ann_zip)
 
     # Step 3: Convert to YOLO
     data_yaml = build_yolo_dataset(extract_dir)
