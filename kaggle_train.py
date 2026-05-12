@@ -82,53 +82,54 @@ def find_cityscapes_data():
     Kaggle auto-extracts uploaded zips, so we check for:
       1. Pre-extracted directories (leftImg8bit/, gtFine/)
       2. Zip files as fallback
-    Returns the path to the directory containing leftImg8bit/ and gtFine/.
+    Returns: (img_root, ann_root) — exact paths to the directories.
     """
     print("="*60)
     print("  STEP 1: LOCATING CITYSCAPES DATASET")
     print("="*60)
 
-    # Debug: show what's in /kaggle/input/
+    # Debug: show what's in /kaggle/input/ (recursive, 3 levels deep)
     print("\n  Scanning /kaggle/input/ ...")
-    for p in sorted(KAGGLE_INPUT.iterdir()):
-        print(f"    📁 {p.name}/")
-        if p.is_dir():
-            for child in sorted(p.iterdir()):
-                if child.is_dir():
-                    print(f"       📁 {child.name}/")
+    def show_tree(path, depth=0, max_depth=3):
+        if depth >= max_depth:
+            return
+        try:
+            for p in sorted(path.iterdir()):
+                indent = "    " + "   " * depth
+                if p.is_dir():
+                    print(f"{indent}📁 {p.name}/")
+                    show_tree(p, depth+1, max_depth)
                 else:
-                    sz = child.stat().st_size / 1e6
-                    print(f"       📄 {child.name} ({sz:.0f} MB)")
+                    sz = p.stat().st_size / 1e6
+                    print(f"{indent}📄 {p.name} ({sz:.0f} MB)")
+        except PermissionError:
+            pass
+    show_tree(KAGGLE_INPUT)
 
     # ── Strategy 1: Look for pre-extracted directories ──
-    # Kaggle auto-extracts zips, so leftImg8bit/ and gtFine/ may already exist
-    for input_dir in KAGGLE_INPUT.iterdir():
-        if not input_dir.is_dir():
-            continue
+    # Kaggle auto-extracts zips into separate folders, so
+    # leftImg8bit/ and gtFine/ may be in DIFFERENT parent dirs.
+    # We find their exact paths independently.
+    img_root = None  # path to the leftImg8bit/ directory itself
+    ann_root = None  # path to the gtFine/ directory itself
 
-        img_dir = None
-        ann_dir = None
+    for match in KAGGLE_INPUT.rglob("leftImg8bit"):
+        if match.is_dir() and (match / "train").exists():
+            img_root = match
+            break
 
-        # Check direct children
-        for child in input_dir.rglob("leftImg8bit"):
-            if child.is_dir():
-                img_dir = child.parent  # parent contains both leftImg8bit/ and gtFine/
-                break
-        for child in input_dir.rglob("gtFine"):
-            if child.is_dir():
-                ann_dir = child.parent
-                break
+    for match in KAGGLE_INPUT.rglob("gtFine"):
+        if match.is_dir() and (match / "train").exists():
+            ann_root = match
+            break
 
-        if img_dir and ann_dir:
-            # Found pre-extracted data
-            # Use the common parent (they should be the same)
-            extract_dir = img_dir
-            print(f"\n  ✓ Found pre-extracted Cityscapes data!")
-            print(f"    leftImg8bit/ at: {extract_dir / 'leftImg8bit'}")
-            print(f"    gtFine/ at:      {extract_dir / 'gtFine'}")
-            return extract_dir, None, None  # No zips needed
+    if img_root and ann_root:
+        print(f"\n  ✓ Found pre-extracted Cityscapes data!")
+        print(f"    Images:      {img_root}")
+        print(f"    Annotations: {ann_root}")
+        return img_root, ann_root
 
-    # ── Strategy 2: Look for zip files ──
+    # ── Strategy 2: Look for zip files and extract ──
     img_zip = None
     ann_zip = None
 
@@ -147,35 +148,47 @@ def find_cityscapes_data():
             ann_zip = p
 
     if img_zip and ann_zip:
-        print(f"\n  ✓ Images zip: {img_zip} ({img_zip.stat().st_size/1e9:.1f} GB)")
-        print(f"  ✓ Annotations zip: {ann_zip} ({ann_zip.stat().st_size/1e6:.0f} MB)")
-        return None, img_zip, ann_zip  # Need extraction
+        print(f"\n  ✓ Found zip files — extracting...")
+        print(f"    Images zip:      {img_zip} ({img_zip.stat().st_size/1e9:.1f} GB)")
+        print(f"    Annotations zip: {ann_zip} ({ann_zip.stat().st_size/1e6:.0f} MB)")
+
+        extract_dir = DATA_ROOT / "cityscapes"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+
+        for zf_path in [ann_zip, img_zip]:
+            print(f"    Extracting {zf_path.name}...")
+            with zipfile.ZipFile(zf_path, "r") as zf:
+                zf.extractall(extract_dir)
+
+        # After extraction, find the dirs
+        img_root = None
+        ann_root = None
+        for match in extract_dir.rglob("leftImg8bit"):
+            if match.is_dir() and (match / "train").exists():
+                img_root = match
+                break
+        for match in extract_dir.rglob("gtFine"):
+            if match.is_dir() and (match / "train").exists():
+                ann_root = match
+                break
+
+        if img_root and ann_root:
+            print(f"  ✓ Extraction complete.")
+            return img_root, ann_root
 
     # ── Nothing found ──
-    print("\n  ✗ Could not find Cityscapes data (neither extracted dirs nor zip files)")
-    print("\n  [ERROR] Cityscapes dataset not found!")
-    print("  Make sure you added 'iot-el-dataset' as an Input to this notebook.")
-    print("  Click '+ Add Input' in the right sidebar.")
+    print("\n  ✗ Could not find Cityscapes data!")
+    print("    Looked for: leftImg8bit/train/ and gtFine/train/")
+    if img_root:
+        print(f"    Found images at: {img_root}")
+    else:
+        print("    Images (leftImg8bit/): NOT FOUND")
+    if ann_root:
+        print(f"    Found annotations at: {ann_root}")
+    else:
+        print("    Annotations (gtFine/): NOT FOUND")
+    print("\n  Make sure you added 'iot-el-dataset' as Input to this notebook.")
     sys.exit(1)
-
-
-def extract_cityscapes(img_zip, ann_zip):
-    """Extract Cityscapes zip archives (only needed if zips found)."""
-    extract_dir = DATA_ROOT / "cityscapes"
-
-    if (extract_dir / "leftImg8bit").exists() and (extract_dir / "gtFine").exists():
-        print("  ✓ Already extracted.")
-        return extract_dir
-
-    extract_dir.mkdir(parents=True, exist_ok=True)
-
-    for zf_path in [ann_zip, img_zip]:
-        print(f"  Extracting {zf_path.name}...")
-        with zipfile.ZipFile(zf_path, "r") as zf:
-            zf.extractall(extract_dir)
-
-    print("  ✓ Extraction complete.")
-    return extract_dir
 
 
 # ──────────────────────────────────────────────
@@ -220,16 +233,23 @@ def convert_annotation(json_path, img_w=2048, img_h=1024):
     return lines
 
 
-def build_yolo_dataset(extract_dir, val_fraction=0.2):
+def build_yolo_dataset(img_root, ann_root, val_fraction=0.2):
+    """Convert Cityscapes to YOLO format.
+    
+    Args:
+        img_root: Path to leftImg8bit/ directory (contains train/, val/, test/)
+        ann_root: Path to gtFine/ directory (contains train/, val/, test/)
+    """
     print("\n" + "="*60)
     print("  STEP 2: CONVERTING TO YOLO FORMAT")
     print("="*60)
-
-    img_root = extract_dir / "leftImg8bit"
-    ann_root = extract_dir / "gtFine"
+    print(f"    Images: {img_root}")
+    print(f"    Annots: {ann_root}")
 
     if not img_root.exists() or not ann_root.exists():
-        print(f"  [ERROR] Data not found at {extract_dir}")
+        print(f"  [ERROR] Data directories not found!")
+        print(f"    img_root exists: {img_root.exists()}")
+        print(f"    ann_root exists: {ann_root.exists()}")
         sys.exit(1)
 
     # Collect pairs
@@ -497,15 +517,11 @@ def main():
     print("  HEAD-MOUNTED NAVIGATION — KAGGLE TRAINING PIPELINE")
     print("="*60 + "\n")
 
-    # Step 1: Find dataset (pre-extracted or zips)
-    extract_dir, img_zip, ann_zip = find_cityscapes_data()
+    # Step 1: Find dataset (pre-extracted dirs or zips → extract)
+    img_root, ann_root = find_cityscapes_data()
 
-    # Step 2: Extract only if we found zips (not pre-extracted)
-    if extract_dir is None:
-        extract_dir = extract_cityscapes(img_zip, ann_zip)
-
-    # Step 3: Convert to YOLO
-    data_yaml = build_yolo_dataset(extract_dir)
+    # Step 2: Convert to YOLO
+    data_yaml = build_yolo_dataset(img_root, ann_root)
 
     # Step 4: Train
     model_pt = train_model(data_yaml)
