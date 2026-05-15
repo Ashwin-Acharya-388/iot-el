@@ -229,14 +229,96 @@ class TemporalSmoother:
 
 
 # ──────────────────────────────────────────────
+# DISTANCE ESTIMATION
+# ──────────────────────────────────────────────
+
+ASSUMED_OBJECT_WIDTH = {
+    # Assumed real-world sizes (meters)
+    "person": 0.5,
+    "car": 1.8,
+    "truck": 2.5,
+    "bus": 2.8,
+    "motorcycle": 0.7,
+    "bicycle": 0.6,
+}
+
+def estimate_distance(det: tuple, frame_w: int = 320, class_names: list = None) -> float:
+    """
+    Estimate distance to object based on bounding box size.
+    
+    ALGORITHM:
+    Uses a pinhole camera model:
+        distance = (assumed_width * focal_length_pixels) / bbox_width_pixels
+    
+    We assume focal length ≈ frame_width (320px) for a typical mobile camera.
+    Then: distance ≈ (assumed_width * 320) / bbox_width
+    
+    Args:
+        det: Detection tuple (x1, y1, x2, y2, conf, class_id)
+        frame_w: Frame width in pixels (320)
+        class_names: List of class names for lookup
+    
+    Returns:
+        Estimated distance in meters (0.5 to 20+)
+    """
+    x1, y1, x2, y2, conf, cls_id = det[0], det[1], det[2], det[3], det[4], int(det[5])
+    y1, y2 = det[1], det[3]
+    bbox_height = y2 - y1
+    if bbox_height < 0.5:
+        return 20.0  # Very far away or invalid
+    calibration_constant = 112.0
+  
+    assumed_h = 1.0
+    # Get assumed object width
+    class_name = CLASS_NAMES[cls_id] if cls_id < len(CLASS_NAMES) else "unknown"
+    assumed_width = ASSUMED_OBJECT_WIDTH.get(class_name, 1.0)  # Default 1 meter
+    
+    # Focal length approximation (adjusted for 320x320 frame)
+    focal_length = 320
+    
+    # Distance = (real_width * focal_length) / bbox_height
+    distance = (85.0 * 10) / bbox_height
+    
+    # Clamp to reasonable range
+    return max(0.1, min(distance, 20.0))
+    
+    return distance
+
+
+def get_closest_obstacle(tracked_dets: list, frame_w: int = 320, frame_h: int = 320) -> Optional[Tuple[str, float]]:
+    """
+    Find the closest obstacle in the frame.
+    
+    Returns:
+        (class_name, distance_meters) or None if no obstacles
+    """
+    if not tracked_dets:
+        return None
+    
+    closest = None
+    closest_dist = float('inf')
+    
+    for det in tracked_dets:
+        dist = estimate_distance(det, frame_w)
+        if dist < closest_dist:
+            closest_dist = dist
+            cls_id = int(det[5])
+            class_name = CLASS_NAMES[cls_id] if cls_id < len(CLASS_NAMES) else "obstacle"
+            closest = (class_name, dist)
+    
+    return closest
+
+
+# ──────────────────────────────────────────────
 # CLEAR PATH FINDER
 # ──────────────────────────────────────────────
 
 COMMANDS = ["Left", "Slight Left", "Forward", "Slight Right", "Right", "Stop"]
 
-def find_safe_direction(tracked_dets: list, frame_w: int = 320, frame_h: int = 320) -> str:
+def find_safe_direction(tracked_dets: list, frame_w: int = 320, frame_h: int = 320) -> Tuple[str, Optional[Tuple[str, float]]]:
     """
     Identify the safest walking direction from current obstacle positions.
+    Also estimates distance to closest obstacle.
     
     ALGORITHM:
     ──────────────────────────────────────────────────────────────
@@ -254,9 +336,19 @@ def find_safe_direction(tracked_dets: list, frame_w: int = 320, frame_h: int = 3
          Right safe → "Left"
     
     5. If ALL zones have danger score above STOP threshold → "Stop"
+    
+    Returns:
+        (direction_str, (class_name, distance_meters) or None)
     ──────────────────────────────────────────────────────────────
     """
+    # Guard clause: if no detections, return Forward ahead
+    if not tracked_dets or len(tracked_dets) == 0:
+        return ("Forward", None)
+    
     STOP_THRESHOLD = 0.60    # If safe zone still scores above this → Stop
+
+    # Get closest obstacle info
+    closest_obs = get_closest_obstacle(tracked_dets, frame_w, frame_h)
 
     # Zone danger accumulator
     zone_scores = {"left": 0.0, "center": 0.0, "right": 0.0}
@@ -298,7 +390,7 @@ def find_safe_direction(tracked_dets: list, frame_w: int = 320, frame_h: int = 3
 
     # Check for stop condition
     if safe_score > STOP_THRESHOLD:
-        return "Stop"
+        return ("Stop", closest_obs)
 
     # Determine gradient: how much worse are adjacent zones?
     left_s   = zone_scores["left"]
@@ -306,16 +398,18 @@ def find_safe_direction(tracked_dets: list, frame_w: int = 320, frame_h: int = 3
     right_s  = zone_scores["right"]
 
     if safest_zone == "center":
-        return "Forward"
+        return ("Forward", closest_obs)
     elif safest_zone == "left":
         # Safe path is on the LEFT side → steer LEFT
         # Check how far off center we need to go
         gap = right_s - left_s     # how much more dangerous is right vs left?
-        return "Left" if gap > 0.2 else "Slight Left"
+        direction = "Left" if gap > 0.2 else "Slight Left"
+        return (direction, closest_obs)
     else:
         # Safe path is on the RIGHT side → steer RIGHT
         gap = left_s - right_s
-        return "Right" if gap > 0.2 else "Slight Right"
+        direction = "Right" if gap > 0.2 else "Slight Right"
+        return (direction, closest_obs)
 
 
 # ──────────────────────────────────────────────
@@ -528,14 +622,21 @@ class NavigationSystem:
             smoothed = self.smoother.update(tracked)
 
             # ── Path finding ───────────────────────
-            raw_direction = find_safe_direction(smoothed)
+            raw_direction, closest_obs = find_safe_direction(smoothed)
 
             # ── Majority voting ────────────────────
             voted_direction = self.voter.vote(raw_direction)
 
             # ── Voice output ───────────────────────
             if self.voter.stable and voted_direction != prev_command:
-                self.voice.speak(voted_direction)
+                # Generate distance-aware message
+                if closest_obs:
+                    class_name, distance = closest_obs
+                    # Create rich output like: "Car, 2.3 meters ahead"
+                    output_msg = f"{voted_direction} • {class_name.capitalize()} {distance:.1f}m"
+                    self.voice.speak(output_msg)
+                else:
+                    self.voice.speak(voted_direction)
                 prev_command = voted_direction
 
             # ── FPS tracking ───────────────────────

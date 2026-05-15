@@ -4,17 +4,22 @@ voice_commands.py
 Handles voice command output for the navigation assistant.
 
 Features:
-  • Pre-loads all 5 directional commands as audio files (fastest playback)
+  • Pre-loads all directional commands as audio files (fastest playback)
+  • Distance-aware warnings: "Car, 2.3 meters ahead" instead of just "Left"
   • 1.5-second cooldown prevents repeating same command
   • Background thread so TTS never blocks the inference loop
   • Falls back gracefully: preloaded WAV → pyttsx3 → print-only
 
-Commands: "Left", "Right", "Slight Left", "Slight Right", "Forward", "Stop"
+Commands: 
+  - Directions: "Left", "Right", "Slight Left", "Slight Right", "Forward", "Stop"
+  - Distance-aware: "Car, 2.3 meters ahead", "Person, 1.8 meters", etc.
 
 Usage:
     from voice_commands import VoiceCommands
     vc = VoiceCommands()
-    vc.speak("Left")
+    vc.speak("Left")                                      # Basic
+    vc.speak("Car, 3 meters ahead")                      # Distance-aware
+    vc.speak_with_distance("Right", "car", 2.5)         # Helper method
     vc.shutdown()
 """
 
@@ -24,6 +29,7 @@ import threading
 import queue
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 
 # ──────────────────────────────────────────────
@@ -31,7 +37,21 @@ from pathlib import Path
 # ──────────────────────────────────────────────
 
 COOLDOWN_SECONDS = 1.5     # Min gap between SAME command being repeated
-ALL_COMMANDS     = ["Left", "Right", "Slight Left", "Slight Right", "Forward", "Stop"]
+BASE_COMMANDS     = ["Left", "Right", "Slight Left", "Slight Right", "Forward", "Stop"]
+
+# Distance-based command templates
+DISTANCE_COMMANDS = [
+    "Person 1 meter",
+    "Person 2 meters",
+    "Car 1 meter",
+    "Car 2 meters",
+    "Car 3 meters",
+    "Truck ahead",
+    "Obstacle very close",
+]
+
+ALL_COMMANDS = BASE_COMMANDS + DISTANCE_COMMANDS
+
 AUDIO_DIR        = Path("./audio")
 VOICE_RATE       = 150     # pyttsx3 words-per-minute (default ~200, lower = clearer)
 VOICE_VOLUME     = 1.0
@@ -209,6 +229,23 @@ class VoiceCommands:
                 pass
 
         self._queue.put(command)
+
+    def speak_with_distance(self, direction: str, obstacle_class: str, distance: float):
+        """
+        Queue a distance-aware navigation command.
+        
+        Example:
+            vc.speak_with_distance("Right", "car", 2.5)
+            → Speaks: "Right • Car, 2.5 meters"
+        
+        Args:
+            direction: Direction name ("Left", "Right", "Forward", etc.)
+            obstacle_class: Object type ("car", "person", "truck", etc.)
+            distance: Distance in meters
+        """
+        # Format: "Direction • Obstacle, X meters"
+        msg = f"{direction} • {obstacle_class.capitalize()}, {distance:.1f} meters"
+        self.speak(msg)
 
     def _playback_loop(self):
         """Background thread: dequeue and play commands."""

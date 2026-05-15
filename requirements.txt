@@ -36,8 +36,17 @@ gTTS>=2.4.0                # Google TTS (better voice quality, needs internet on
 pygame>=2.5.0              # Fast WAV/MP3 playback for pre-recorded commands
 # playsound>=1.3.0         # Alternative lightweight audio player
 
+# Speech Recognition (voice input from microphone)
+SpeechRecognition>=3.10.0  # Speech recognition framework
+pocketsphinx>=0.1.15       # Offline speech recognition (PocketSphinx backend)
+vosk>=0.3.21               # Alternative offline speech recognition
+
 # espeak: install via apt, not pip
 #   sudo apt install espeak espeak-data libespeak1
+# 
+# pyaudio (for microphone input on RPi):
+#   sudo apt install python3-pyaudio portaudio19-dev
+#   pip install PyAudio
 
 # ── Data & Math ──────────────────────────────────────────────
 numpy>=1.24.0
