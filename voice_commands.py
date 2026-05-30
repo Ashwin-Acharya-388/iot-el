@@ -25,6 +25,7 @@ Usage:
 
 import os
 import time
+import shutil
 import threading
 import queue
 import tempfile
@@ -62,9 +63,9 @@ VOICE_VOLUME     = 1.0
 # ──────────────────────────────────────────────
 
 def _try_import_pygame() -> bool:
+    """Check if pygame is importable (does NOT initialize mixer)."""
     try:
         import pygame
-        pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
         return True
     except Exception:
         return False
@@ -120,7 +121,7 @@ def generate_audio_files(commands: list, audio_dir: Path, engine=None) -> dict:
 
     # Fallback: pyttsx3 → save to WAV (pyttsx3 doesn't easily save files on all platforms)
     # We'll use a subprocess call to 'espeak' on Linux/RPi if available
-    if os.system("which espeak > /dev/null 2>&1") == 0:
+    if shutil.which("espeak"):
         for cmd in commands:
             out = audio_dir / f"{cmd.replace(' ', '_').lower()}.wav"
             if not out.exists():
@@ -178,9 +179,15 @@ class VoiceCommands:
 
         # 2. Try pygame for pre-recorded playback (lowest latency)
         if self._audio_files and _try_import_pygame():
-            self._pygame_ready = True
-            print("  ✓ Audio backend: pygame (pre-recorded WAV/MP3)")
-            return
+            import pygame
+            try:
+                pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
+            except Exception as e:
+                print(f"  [WARN] pygame mixer init failed: {e}")
+            else:
+                self._pygame_ready = True
+                print("  ✓ Audio backend: pygame (pre-recorded WAV/MP3)")
+                return
 
         # 3. Try pyttsx3 for real-time TTS
         engine = _try_import_pyttsx3()
@@ -198,7 +205,7 @@ class VoiceCommands:
             return
 
         # 4. Try espeak directly as subprocess
-        if os.system("which espeak > /dev/null 2>&1") == 0:
+        if shutil.which("espeak"):
             print("  ✓ Audio backend: espeak (subprocess)")
             self._espeak = True
             return

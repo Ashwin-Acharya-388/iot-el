@@ -31,6 +31,11 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+try:
+    import cv2
+except ImportError:
+    cv2 = None  # Will fail with clear error at runtime
+
 
 # ──────────────────────────────────────────────
 # CONFIGURATION
@@ -112,7 +117,6 @@ class FreespaceInference:
             5. Transpose to NCHW
             6. Add batch dimension
         """
-        import cv2
         img = cv2.resize(frame, (FRAME_SIZE, FRAME_SIZE))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img = img.astype(np.float32) / 255.0
@@ -251,7 +255,7 @@ class MaskSmoother:
             return mask
 
         # Average masks → threshold at 0.5 (majority vote per pixel)
-        avg = np.mean(list(self._buffer), axis=0)
+        avg = np.mean(np.stack(self._buffer), axis=0)
         return (avg >= 0.5).astype(np.uint8)
 
 
@@ -314,7 +318,6 @@ class FreespaceNavigation:
         self.voice = VoiceCommands()
 
         # Camera
-        import cv2
         self.cap = cv2.VideoCapture(camera_idx)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_SIZE)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_SIZE)
@@ -335,7 +338,7 @@ class FreespaceNavigation:
 
     def run(self):
         """Main capture → infer → command loop."""
-        import cv2
+
 
         self._running = True
         frame_times = collections.deque(maxlen=30)
@@ -383,7 +386,7 @@ class FreespaceNavigation:
             # ── FPS tracking ──
             t_end = time.perf_counter()
             frame_times.append(t_end - t_start)
-            fps = 1.0 / np.mean(frame_times) if frame_times else 0
+            fps = len(frame_times) / sum(frame_times) if frame_times else 0
 
             # ── Debug output ──
             if self.debug:
@@ -394,8 +397,7 @@ class FreespaceNavigation:
                 print(f"  FPS: {fps:4.1f} | Lat: {lat_ms:5.1f}ms | "
                       f"Free: {100*zone_info['total_free']:.0f}% | "
                       f"Raw: {raw_direction:<12} | Vote: {voted_direction}")
-                if self.debug:
-                    print(f"    Zones: {zones_str}")
+                print(f"    Zones: {zones_str}")
 
             # ── Visual debug ──
             if self.debug and not self._is_headless():
@@ -409,11 +411,11 @@ class FreespaceNavigation:
         print("  ✓ Shutdown complete.")
 
     def _is_headless(self) -> bool:
-        return os.environ.get("DISPLAY", "") == "" and not self.debug
+        return os.environ.get("DISPLAY", "") == ""
 
     def _draw_debug(self, frame, mask, direction, zone_info, fps, lat_ms):
         """Draw segmentation overlay for visual debugging."""
-        import cv2
+
 
         vis = frame.copy()
 
