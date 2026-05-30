@@ -53,10 +53,10 @@ ZONE_DANGER = {
     "right":  1.0,
 }
 
-# Class ID → display name (must match dataset.yaml)
+# Class ID → display name (must match dataset.yaml — 11 instance-level classes)
 CLASS_NAMES = [
     "person", "rider", "car", "truck", "bus", "train", "motorcycle", "bicycle",
-    "traffic light", "traffic sign", "pole", "wall", "fence", "curb", "sidewalk", "road",
+    "traffic light", "traffic sign", "pole",
 ]
 
 # High-danger classes (close proximity = immediate stop/redirect)

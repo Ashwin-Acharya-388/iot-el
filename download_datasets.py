@@ -45,8 +45,10 @@ CITYSCAPES_DIR = DATA_ROOT / "cityscapes"
 YOLO_DIR = DATA_ROOT / "yolo_cityscapes"
 
 # Cityscapes → YOLO class mapping
-# We keep only the navigation-critical semantic classes.
-# Cityscapes uses polygon instance labels; we'll convert bounding boxes from them.
+# We keep only INSTANCE-LEVEL object detection classes.
+# Surface/region classes (road, sidewalk, curb, wall, fence) are REMOVED because
+# their polygons span huge image areas → degenerate bounding boxes that destroy
+# detector accuracy. Every Cityscapes detection benchmark uses these 8-11 classes.
 CITYSCAPES_CLASSES = {
     # Class Name              : YOLO idx
     "person":                   0,
@@ -60,29 +62,17 @@ CITYSCAPES_CLASSES = {
     "traffic light":            8,
     "traffic sign":             9,
     "pole":                    10,
-    "wall":                    11,
-    "fence":                   12,
-    "curb":                    13,   # mapped from 'sidewalk' boundary
-    "sidewalk":                14,
-    "road":                    15,
 }
 
 YOLO_CLASS_NAMES = list(CITYSCAPES_CLASSES.keys())
 
 # Cityscapes labelIds for each semantic category (from official trainIds)
 # Reference: https://github.com/mcordts/cityscapesScripts
+# Only instance-level detection classes are included.
 CITYSCAPES_LABEL_IDS = {
-    7:  "road",
-    8:  "sidewalk",
-    11: "building",
-    12: "wall",
-    13: "fence",
     17: "pole",
     19: "traffic light",
     20: "traffic sign",
-    21: "vegetation",    # skip
-    22: "terrain",       # skip
-    23: "sky",           # skip
     24: "person",
     25: "rider",
     26: "car",
@@ -91,7 +81,6 @@ CITYSCAPES_LABEL_IDS = {
     29: "train",
     30: "motorcycle",
     31: "bicycle",
-    33: "curb",          # Cityscapes doesn't have explicit curb; we approximate
 }
 
 # Map label IDs to our YOLO classes (skip anything not in CITYSCAPES_CLASSES)
@@ -297,10 +286,17 @@ def bbox_to_yolo(x_min, y_min, x_max, y_max, img_w, img_h) -> tuple:
     return cx, cy, w, h
 
 
+# Bounding box quality thresholds
+MIN_BOX_PX       = 10      # Minimum box dimension in pixels
+MAX_AREA_RATIO   = 0.30    # Skip boxes covering >30% of image area
+MAX_ASPECT_RATIO = 8.0     # Skip boxes with extreme aspect ratios (annotation artifacts)
+
+
 def convert_annotation(json_path: Path, img_w: int = 2048, img_h: int = 1024) -> list:
     """
     Parse a Cityscapes instanceIds JSON file and return YOLO label lines.
     Cityscapes fine annotations have per-object polygons with label names.
+    Includes quality filtering to skip degenerate bounding boxes.
     """
     with open(json_path) as f:
         data = json.load(f)
@@ -316,6 +312,16 @@ def convert_annotation(json_path: Path, img_w: int = 2048, img_h: int = 1024) ->
             label = "rider"
         elif label.startswith("car"):
             label = "car"
+        elif label.startswith("truck"):
+            label = "truck"
+        elif label.startswith("bus"):
+            label = "bus"
+        elif label.startswith("motorcycle"):
+            label = "motorcycle"
+        elif label.startswith("bicycle"):
+            label = "bicycle"
+        elif label.startswith("train"):
+            label = "train"
 
         if label not in CITYSCAPES_CLASSES:
             continue
@@ -327,8 +333,21 @@ def convert_annotation(json_path: Path, img_w: int = 2048, img_h: int = 1024) ->
 
         x1, y1, x2, y2 = polygon_to_bbox(polygon)
 
-        # Skip degenerate boxes
-        if x2 - x1 < 5 or y2 - y1 < 5:
+        box_w = x2 - x1
+        box_h = y2 - y1
+
+        # Skip boxes that are too small (< MIN_BOX_PX pixels)
+        if box_w < MIN_BOX_PX or box_h < MIN_BOX_PX:
+            continue
+
+        # Skip boxes with extreme aspect ratios (annotation artifacts)
+        aspect = max(box_w, box_h) / max(min(box_w, box_h), 1)
+        if aspect > MAX_ASPECT_RATIO:
+            continue
+
+        # Skip boxes covering too much of the image (degenerate region annotations)
+        area_ratio = (box_w * box_h) / (img_w * img_h)
+        if area_ratio > MAX_AREA_RATIO:
             continue
 
         cx, cy, w, h = bbox_to_yolo(x1, y1, x2, y2, img_w, img_h)

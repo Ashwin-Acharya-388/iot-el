@@ -56,20 +56,26 @@ YOLO_DIR      = DATA_ROOT / "yolo_cityscapes"
 MODELS_DIR    = KAGGLE_WORK / "models"
 RUNS_DIR      = KAGGLE_WORK / "runs"
 
-# Training config (optimized for Kaggle T4 GPU)
-TRAIN_EPOCHS  = 120
-TRAIN_BATCH   = 32       # T4 16GB can handle batch=32 at 416px for YOLOv8n
-TRAIN_IMGSZ   = 416      # Train at 416 for richer features
-INFER_IMGSZ   = 320      # Quantize/deploy at 320 for RPi
+# Training config (optimized for Kaggle T4 GPU + fast convergence)
+TRAIN_EPOCHS  = 50        # Reduced from 120; early stopping handles convergence
+TRAIN_BATCH   = 32        # T4 16GB can handle batch=32 at 416px for YOLOv8n
+TRAIN_IMGSZ   = 416       # Train at 416 for richer features
+INFER_IMGSZ   = 320       # Quantize/deploy at 320 for RPi
 
-# Cityscapes class mapping
+# Cityscapes class mapping — INSTANCE-LEVEL CLASSES ONLY
+# Surface/region classes (road, sidewalk, curb, wall, fence) are REMOVED because
+# their polygons create degenerate image-spanning bounding boxes that destroy accuracy.
 CITYSCAPES_CLASSES = {
     "person": 0, "rider": 1, "car": 2, "truck": 3, "bus": 4,
     "train": 5, "motorcycle": 6, "bicycle": 7, "traffic light": 8,
-    "traffic sign": 9, "pole": 10, "wall": 11, "fence": 12,
-    "curb": 13, "sidewalk": 14, "road": 15,
+    "traffic sign": 9, "pole": 10,
 }
 YOLO_CLASS_NAMES = list(CITYSCAPES_CLASSES.keys())
+
+# Bounding box quality thresholds
+MIN_BOX_PX       = 10      # Minimum box dimension in pixels
+MAX_AREA_RATIO   = 0.30    # Skip boxes covering >30% of image area
+MAX_ASPECT_RATIO = 8.0     # Skip boxes with extreme aspect ratios
 
 
 # ──────────────────────────────────────────────
@@ -202,15 +208,22 @@ def polygon_to_bbox(polygon):
 
 
 def convert_annotation(json_path, img_w=2048, img_h=1024):
+    """Convert Cityscapes annotation to YOLO format with quality filtering."""
     with open(json_path) as f:
         data = json.load(f)
 
     lines = []
     for obj in data.get("objects", []):
         label = obj.get("label", "").lower()
+        # Map compound labels (e.g. "persongroup" → "person")
         if label.startswith("person"): label = "person"
         elif label.startswith("rider"): label = "rider"
         elif label.startswith("car"):   label = "car"
+        elif label.startswith("truck"): label = "truck"
+        elif label.startswith("bus"):   label = "bus"
+        elif label.startswith("motorcycle"): label = "motorcycle"
+        elif label.startswith("bicycle"): label = "bicycle"
+        elif label.startswith("train"): label = "train"
 
         if label not in CITYSCAPES_CLASSES:
             continue
@@ -221,7 +234,21 @@ def convert_annotation(json_path, img_w=2048, img_h=1024):
             continue
 
         x1, y1, x2, y2 = polygon_to_bbox(polygon)
-        if x2 - x1 < 5 or y2 - y1 < 5:
+        box_w = x2 - x1
+        box_h = y2 - y1
+
+        # Quality filter: skip too-small boxes
+        if box_w < MIN_BOX_PX or box_h < MIN_BOX_PX:
+            continue
+
+        # Quality filter: skip extreme aspect ratios
+        aspect = max(box_w, box_h) / max(min(box_w, box_h), 1)
+        if aspect > MAX_ASPECT_RATIO:
+            continue
+
+        # Quality filter: skip boxes covering >30% of image (degenerate regions)
+        area_ratio = (box_w * box_h) / (img_w * img_h)
+        if area_ratio > MAX_AREA_RATIO:
             continue
 
         cx = max(0, min(1, (x1+x2)/2/img_w))
@@ -348,13 +375,13 @@ def train_model(data_yaml):
         device          = device,
         project         = str(RUNS_DIR),
         name            = "train_baseline",
-        lr0             = 1e-3,
+        lr0             = 1e-2,            # Higher initial LR for faster convergence
         lrf             = 0.01,
-        warmup_epochs   = 5,
-        patience        = 25,
+        warmup_epochs   = 3,
+        patience        = 10,              # Stop early if no improvement for 10 epochs
         cos_lr          = True,
 
-        # Robust augmentations
+        # Augmentations — tuned for Cityscapes instance detection
         hsv_h           = 0.015,
         hsv_s           = 0.7,
         hsv_v           = 0.4,
@@ -364,10 +391,12 @@ def train_model(data_yaml):
         fliplr          = 0.5,
         flipud          = 0.0,
         mosaic          = 1.0,
-        mixup           = 0.15,
-        copy_paste      = 0.1,
+        mixup           = 0.1,             # Slightly reduced for cleaner training
+        copy_paste      = 0.05,
         erasing         = 0.2,
         multi_scale     = True,
+        close_mosaic    = 10,              # Disable mosaic for last 10 epochs → better convergence
+        label_smoothing = 0.1,             # Prevents overconfidence, improves generalization
 
         save            = True,
         save_period     = 10,
@@ -477,15 +506,28 @@ def quantize_model(model_pt, data_yaml):
     except Exception as e:
         print(f"  [WARN] INT8 quantization failed: {e}")
 
-    # QAT fine-tuning
-    print("\n  4c. QAT Fine-Tuning (10 epochs)...")
+    # QAT fine-tuning — train at full resolution with proper config
+    print("\n  4c. QAT Fine-Tuning (20 epochs at 416×416)...")
     try:
         qat_model = YOLO(str(model_pt))
         qat_model.train(
-            data=data_yaml, epochs=10, imgsz=INFER_IMGSZ, batch=16,
-            device="0", lr0=1e-4, lrf=0.001, warmup_epochs=1, patience=10,
-            project=str(RUNS_DIR), name="qat_finetune",
-            save=True, plots=False, verbose=False,
+            data            = data_yaml,
+            epochs          = 20,              # More epochs for better QAT recovery
+            imgsz           = TRAIN_IMGSZ,     # Train at 416 (same as baseline) not 320
+            batch           = TRAIN_BATCH,
+            device          = "0",
+            lr0             = 5e-4,            # Higher LR for faster QAT convergence
+            lrf             = 0.01,
+            warmup_epochs   = 2,
+            patience        = 8,               # Stop if no improvement for 8 epochs
+            cos_lr          = True,
+            close_mosaic    = 5,               # Clean images for last 5 epochs
+            label_smoothing = 0.05,
+            project         = str(RUNS_DIR),
+            name            = "qat_finetune",
+            save            = True,
+            plots           = True,
+            verbose         = True,
         )
         qat_best = None
         for c in RUNS_DIR.rglob("qat_finetune*/weights/best.pt"):

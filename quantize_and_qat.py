@@ -43,8 +43,9 @@ RESULTS_JSON        = Path("./models/qat_comparison.json")
 
 INPUT_SIZE          = (320, 320)
 CALIB_N_IMAGES      = 300
-QAT_EPOCHS          = 10
-QAT_LR              = 1e-4           # Low LR for fine-tuning only
+QAT_EPOCHS          = 20            # More epochs for better QAT recovery
+QAT_LR              = 5e-4          # Higher LR for meaningful QAT fine-tuning
+QAT_IMGSZ           = 416           # Train at same resolution as baseline
 
 
 # ──────────────────────────────────────────────
@@ -287,18 +288,21 @@ def run_qat_ultralytics(baseline_pt: Path, qat_onnx_out: Path,
     result = model.train(
         data          = data_yaml,
         epochs        = epochs,
-        imgsz         = INPUT_SIZE[0],
-        batch         = 8,
+        imgsz         = QAT_IMGSZ,            # Train at 416 (same as baseline)
+        batch         = 16,
         device        = device,
         lr0           = lr,
-        lrf           = 0.001,
-        warmup_epochs = 1,
-        patience      = epochs,           # Don't stop early during QAT
+        lrf           = 0.01,
+        warmup_epochs = 2,
+        patience      = 8,                    # Aggressive early stopping for QAT
+        cos_lr        = True,
+        close_mosaic  = 5,                    # Clean images for last 5 epochs
+        label_smoothing = 0.05,
         project       = str(qat_run_dir.parent),
         name          = qat_run_dir.name,
         save          = True,
-        plots         = False,
-        verbose       = False,
+        plots         = True,
+        verbose       = True,
     )
 
     # Get QAT-fine-tuned weights

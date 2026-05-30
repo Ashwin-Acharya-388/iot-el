@@ -26,23 +26,23 @@ from pathlib import Path
 # CONFIGURATION
 # ──────────────────────────────────────────────
 
-DEFAULT_EPOCHS      = 120         # More epochs for thorough convergence (early stopping will cut short if needed)
+DEFAULT_EPOCHS      = 50          # Reduced from 120; early stopping handles convergence
 DEFAULT_BATCH       = 32          # Use 32 on Kaggle T4/P100; reduce to 16 or 8 if OOM
 DEFAULT_IMGSZ       = 416         # Train at 416 for richer feature learning; quantize to 320 for RPi
-DEFAULT_LR0         = 1e-3        # Initial learning rate
+DEFAULT_LR0         = 1e-2        # Higher initial LR for faster convergence with cosine decay
 DEFAULT_LRF         = 0.01        # Final LR fraction (cosine decay)
-DEFAULT_WARMUP      = 5           # Longer warmup for stable early gradients
-DEFAULT_PATIENCE    = 25          # Generous patience — let the model converge fully
+DEFAULT_WARMUP      = 3           # Warmup epochs for stable early gradients
+DEFAULT_PATIENCE    = 10          # Aggressive early stopping — save Kaggle GPU time
 
 MODEL_BASE          = "yolov8n.pt"
 DATASET_YAML        = "./data/yolo_cityscapes/dataset.yaml"
 OUTPUT_DIR          = Path("./runs/train_baseline")
 FINAL_MODEL         = Path("./models/yolov8n_cityscapes.pt")
 
-# Navigation-critical classes (subset of full class list for focused reporting)
+# Navigation-critical classes (matches the 11 instance-level detection classes)
 CRITICAL_CLASSES = [
     "person", "rider", "car", "bus", "truck", "motorcycle", "bicycle",
-    "traffic light", "traffic sign", "pole", "wall", "fence", "sidewalk",
+    "traffic light", "traffic sign", "pole",
 ]
 
 
@@ -140,7 +140,7 @@ def train(args) -> Path:
         cos_lr          = True,          # Cosine LR decay — smoother convergence than step decay
 
         # ── Robust Augmentation Suite ──────────────────
-        # Stronger augmentation = more generalization = fewer false detections on RPi
+        # Tuned for Cityscapes instance detection (11 classes)
         hsv_h           = 0.015,
         hsv_s           = 0.7,
         hsv_v           = 0.4,
@@ -152,14 +152,16 @@ def train(args) -> Path:
         fliplr          = 0.5,
         flipud          = 0.0,           # Never flip vertically (sky≠ground)
         mosaic          = 1.0,           # Always mosaic for diverse scenes
-        mixup           = 0.15,          # ↑ from 0.1: helps generalize across scenes
-        copy_paste      = 0.1,           # Paste objects across images for rare-class boost
+        mixup           = 0.1,           # Moderate mixup for generalization
+        copy_paste      = 0.05,          # Light copy-paste for rare-class boost
         erasing         = 0.2,           # Random erasing for occlusion robustness
 
         # ── Multi-Scale Training ───────────────────────
-        # Randomly varies input size each batch between 0.5× and 1.5× imgsz
-        # This makes the model robust to objects at varying distances
         multi_scale     = True,
+
+        # ── Convergence Helpers ────────────────────────
+        close_mosaic    = 10,            # Disable mosaic for last 10 epochs → cleaner convergence
+        label_smoothing = 0.1,           # Prevents overconfident predictions
 
         # Save settings
         save            = True,

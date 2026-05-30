@@ -34,8 +34,7 @@ REPORT_PATH  = Path("./models/accuracy_report.json")
 
 CRITICAL_CLASSES = [
     "person", "rider", "car", "truck", "bus", "motorcycle", "bicycle",
-    "traffic light", "traffic sign", "pole", "wall", "fence",
-    "curb", "sidewalk", "road",
+    "traffic light", "traffic sign", "pole",
 ]
 
 MODELS = {
