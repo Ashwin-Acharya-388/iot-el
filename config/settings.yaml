@@ -1,0 +1,8 @@
+mqtt:
+  broker: "broker.emqx.io"
+  port: 8083
+  topic: "iot/navigation"
+
+dashboard:
+  host: "127.0.0.1"
+  port: 5500

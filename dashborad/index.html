@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AI Navigation Command Center</title>
+
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+<div class="container">
+
+  <!-- SIDEBAR -->
+
+  <div class="sidebar">
+
+    <div class="system-box">
+      <div class="online">
+        <div class="dot"></div>
+        <div>
+          <h3>SYSTEM ONLINE</h3>
+          <p>AI Navigation Active</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="menu">
+      <div class="menu-item active">🏠 DASHBOARD</div>
+      <div class="menu-item">📹 LIVE FEED</div>
+      <div class="menu-item">🔊 VOICE OUTPUT</div>
+      <div class="menu-item">⚙ SETTINGS</div>
+    </div>
+  </div>
+
+  <!-- MAIN -->
+
+  <div class="main">
+
+    <div class="topbar">
+      <div class="title">AI NAVIGATION COMMAND CENTER</div>
+
+      <div class="clock">
+        <div id="time">04:28:45 PM</div>
+        <div id="date">15 May 2026</div>
+      </div>
+    </div>
+
+    <!-- TOP CARDS -->
+
+    <div class="cards">
+
+      <div class="card">
+        <h4>DIRECTION</h4>
+        <div class="big">-</div>
+      </div>
+
+      <div class="card">
+        <h4>FPS</h4>
+        <div class="big">0</div>
+      </div>
+
+      <div class="card">
+        <h4>OBSTACLE COUNT</h4>
+        <div class="big">0</div>
+      </div>
+
+      <div class="card">
+        <h4>SYSTEM STATUS</h4>
+        <div class="status-circle"></div>
+        <div class="status-text">ONLINE</div>
+      </div>
+
+    </div>
+
+    <!-- MIDDLE -->
+
+    <div class="middle">
+
+      <!-- CAMERA -->
+
+      <div class="panel">
+
+        <h3>LIVE CAMERA FEED</h3>
+
+        <div class="camera">
+          
+        </div>
+
+      </div>
+
+      <!-- ALERTS -->
+
+      <div class="panel alerts">
+
+        <h3>RECENT ALERTS</h3>
+
+        <table>
+          <tr>
+            <td>time</td>
+            <td class="cyan">-</td>
+            <td>-</td>
+          </tr>
+
+          <tr>
+            <td>time</td>
+            <td class="green">-</td>
+            <td>-</td>
+          </tr>
+
+          <tr>
+            <td>time</td>
+            <td class="yellow">-</td>
+            <td>-</td>
+          </tr>
+
+          <tr>
+            <td>time</td>
+            <td class="cyan">-</td>
+            <td>-</td>
+          </tr>
+
+          <tr>
+            <td>time</td>
+            <td class="green">-</td>
+            <td>-</td>
+          </tr>
+        </table>
+
+      </div>
+
+    </div>
+
+    <!-- VOICE OUTPUT -->
+
+    <div class="panel">
+
+      <h3>VOICE OUTPUT (AS TEXT)</h3>
+
+      <div class="voice">
+
+        <div class="wave">
+
+          <div class="bars">
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+          </div>
+
+        </div>
+
+        <div class="voice-text">
+          <h2>--.</h2>
+
+          <p>--.</p>
+          <p>--.</p>
+
+          <p class="danger">
+            ---
+          </p>
+        </div>
+
+      </div>
+
+    </div>
+
+  </div>
+
+</div>
+
+<script src="script.js"></script>
+
+</body>
+</html>
