@@ -53,23 +53,27 @@
 
       <div class="card">
         <h4>DIRECTION</h4>
-        <div class="big">-</div>
+        <div id="val-direction" class="big">-</div>
       </div>
 
       <div class="card">
         <h4>FPS</h4>
-        <div class="big">0</div>
+        <div id="val-fps" class="big">0</div>
       </div>
 
       <div class="card">
         <h4>OBSTACLE COUNT</h4>
-        <div class="big">0</div>
+        <div id="val-obstacle-count" class="big">0</div>
       </div>
 
       <div class="card">
         <h4>SYSTEM STATUS</h4>
-        <div class="status-circle"></div>
-        <div class="status-text">ONLINE</div>
+        <div class="status-circle" id="status-circle" style="width: 25px; height: 25px; margin: 5px auto; box-shadow: 0 0 15px #39ff4a;"></div>
+        <div style="font-size: 15px; line-height: 1.5; color: white; text-align: left; margin-top: 5px;">
+          <div>Cam: <span id="status-camera" style="color: #35ff4f; font-weight: bold;">Simulated</span></div>
+          <div>Model: <span id="status-model" style="color: #35ff4f; font-weight: bold;">Simulated</span></div>
+          <div>Server: <span id="status-server" style="color: #35ff4f; font-weight: bold;">Active</span></div>
+        </div>
       </div>
 
     </div>
@@ -85,7 +89,7 @@
         <h3>LIVE CAMERA FEED</h3>
 
         <div class="camera">
-          
+          <img id="camera-feed" src="" alt="Live Feed">
         </div>
 
       </div>
@@ -96,36 +100,10 @@
 
         <h3>RECENT ALERTS</h3>
 
-        <table>
-          <tr>
-            <td>time</td>
-            <td class="cyan">-</td>
-            <td>-</td>
-          </tr>
-
-          <tr>
-            <td>time</td>
-            <td class="green">-</td>
-            <td>-</td>
-          </tr>
-
-          <tr>
-            <td>time</td>
-            <td class="yellow">-</td>
-            <td>-</td>
-          </tr>
-
-          <tr>
-            <td>time</td>
-            <td class="cyan">-</td>
-            <td>-</td>
-          </tr>
-
-          <tr>
-            <td>time</td>
-            <td class="green">-</td>
-            <td>-</td>
-          </tr>
+        <table id="alerts-table">
+          <tbody id="alerts-body">
+            <!-- Alerts will be prepended here in real time -->
+          </tbody>
         </table>
 
       </div>
@@ -156,15 +134,11 @@
 
         </div>
 
-        <div class="voice-text">
-          <h2>--.</h2>
-
-          <p>--.</p>
-          <p>--.</p>
-
-          <p class="danger">
-            ---
-          </p>
+        <div class="voice-text" id="voice-text-container">
+          <h2 id="voice-main">Waiting for navigation loop...</h2>
+          <div id="voice-history">
+            <!-- Voice announcements will print here -->
+          </div>
         </div>
 
       </div>
@@ -175,6 +149,7 @@
 
 </div>
 
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script src="script.js"></script>
 
 </body>
