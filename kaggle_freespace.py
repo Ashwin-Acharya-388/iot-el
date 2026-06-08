@@ -107,16 +107,9 @@ WORKERS      = 2        # Kaggle often has limited CPU cores
 WARMUP_EPOCHS = 3       # Linear warmup before cosine decay
 UNFREEZE_EPOCH = 5      # Unfreeze backbone after this epoch
 
-# ADE20K walkable pixel values (1-indexed class IDs in _seg.png)
-# These pixel values in the annotation PNGs represent walkable surfaces
+# WALKABLE_PIXEL_VALUES remapped to strictly indoor walkable surfaces
 WALKABLE_PIXEL_VALUES = {
     4,   # floor, flooring
-    7,   # road, route
-    10,  # grass
-    12,  # sidewalk, pavement
-    14,  # earth, ground
-    18,  # field
-    22,  # path
     29,  # rug, carpet
 }
 
@@ -129,15 +122,42 @@ STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 # STEP 1: FIND ADE20K DATA
 # ──────────────────────────────────────────────
 
+INDOOR_KEYWORDS = {'corridor', 'hallway', 'office', 'living_room', 'kitchen', 'lobby', 'room'}
+
+def get_indoor_stems(ade20k_root: Path) -> set:
+    """Parse sceneCategories.txt if it exists to find indoor image names."""
+    stems = set()
+    categories_file = ade20k_root / "sceneCategories.txt"
+    if not categories_file.exists():
+        # Search recursively for sceneCategories.txt
+        found = list(ade20k_root.rglob("sceneCategories.txt"))
+        if found:
+            categories_file = found[0]
+            
+    if categories_file.exists():
+        try:
+            with open(categories_file, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        stem = parts[0]
+                        category = parts[1].lower()
+                        if any(kw in category for kw in INDOOR_KEYWORDS):
+                            stems.add(stem)
+            print(f"  [FILTER] Parsed {len(stems)} indoor image stems from {categories_file.name}")
+        except Exception as e:
+            print(f"  [WARN] Failed to parse categories file: {e}")
+    return stems
+
 def find_ade20k():
     """
-    Locate ADE20K data from Kaggle input datasets or download it from MIT CSAIL/HuggingFace LFS.
+    Locate ADE20K data dynamically from Kaggle input datasets or download it.
     """
     print("=" * 60)
     print("  STEP 1: LOCATING ADE20K DATASET")
     print("=" * 60)
 
-    # Strategy 0: Check if already downloaded/extracted in /kaggle/working (or local .)
+    # Strategy 0: Check if already downloaded/extracted in /kaggle/working
     working_candidate = KAGGLE_WORK / "ADEChallengeData2016"
     if working_candidate.exists() and (working_candidate / "images" / "training").exists():
         print(f"\n  ✓ Found ADE20K in workspace: {working_candidate}")
@@ -146,113 +166,33 @@ def find_ade20k():
     # Scan input if it exists
     ade20k_root = None
     if KAGGLE_INPUT.exists():
-        print(f"\n  Scanning {KAGGLE_INPUT} ...")
+        print(f"\n  Scanning {KAGGLE_INPUT} recursively for ADE20K...")
         
-        # Safe, non-recursive tree display
-        def show_tree(path, depth=0, max_depth=2, max_files_per_dir=10):
-            if depth >= max_depth:
-                return
-            try:
-                files_printed = 0
-                for p in sorted(path.iterdir()):
-                    indent = "    " + "   " * depth
-                    if p.is_dir():
-                        print(f"{indent}📁 {p.name}/")
-                        show_tree(p, depth + 1, max_depth, max_files_per_dir)
-                    else:
-                        if files_printed < max_files_per_dir:
-                            sz = p.stat().st_size / 1e6
-                            print(f"{indent}📄 {p.name} ({sz:.1f} MB)")
-                            files_printed += 1
-                        elif files_printed == max_files_per_dir:
-                            print(f"{indent}... and more files")
-                            files_printed += 1
-            except (PermissionError, FileNotFoundError):
-                pass
+        # 1. Search for sceneCategories.txt
+        found_categories = list(KAGGLE_INPUT.rglob("sceneCategories.txt"))
+        if found_categories:
+            ade20k_root = found_categories[0].parent
+            print(f"    ✓ Found ADE20K root via sceneCategories.txt at: {ade20k_root}")
+            return ade20k_root
+            
+        # 2. Search for images/training or images/train
+        found_images = list(KAGGLE_INPUT.rglob("images"))
+        for img_dir in found_images:
+            if (img_dir / "training").exists() or (img_dir / "train").exists():
+                ade20k_root = img_dir.parent
+                print(f"    ✓ Found ADE20K root via images/ folder at: {ade20k_root}")
+                return ade20k_root
                 
-        show_tree(KAGGLE_INPUT)
-
-        # Strategy 1: Smart, shallow search for ADEChallengeData2016 structure
-        print("\n  Searching for ADEChallengeData2016/ ...")
-        try:
-            for candidate in KAGGLE_INPUT.iterdir():
-                if candidate.is_dir():
-                    if candidate.name == "ADEChallengeData2016":
-                        ade20k_root = candidate
-                        break
-                    # Check one level down
-                    for sub in candidate.iterdir():
-                        if sub.is_dir() and sub.name == "ADEChallengeData2016":
-                            ade20k_root = sub
-                            break
-                if ade20k_root:
-                    break
-        except Exception:
-            pass
-
-        # Strategy 2: Look for images/training or images/train directories
-        if not ade20k_root:
-            print("  Searching for images/training/ structure ...")
-            try:
-                for match in KAGGLE_INPUT.rglob("images"):
-                    if (match / "training").exists() or (match / "train").exists():
-                        ade20k_root = match.parent
-                        print(f"    Found via images path: {ade20k_root}")
-                        break
-            except Exception:
-                pass
-
-        # Strategy 3: Look for any directory with "ade20k" in the name, then probe inside
-        if not ade20k_root:
-            print("  Searching for directories containing 'ade20k' ...")
-            try:
-                for candidate in KAGGLE_INPUT.iterdir():
-                    if candidate.is_dir() and "ade20k" in candidate.name.lower():
-                        print(f"    Found ADE20K directory: {candidate}")
-                        # Check if THIS directory has the standard structure inside
-                        for sub in [candidate, *candidate.iterdir()]:
-                            if not sub.is_dir():
-                                continue
-                            img_dir = sub / "images"
-                            if img_dir.exists():
-                                for split_name in ["training", "train"]:
-                                    if (img_dir / split_name).exists():
-                                        ade20k_root = sub
-                                        print(f"    Resolved root: {ade20k_root}")
-                                        break
-                            if ade20k_root:
-                                break
-                        # If still not found, check for ADEChallengeData2016 inside
-                        if not ade20k_root:
-                            for sub in candidate.rglob("ADEChallengeData2016"):
-                                if sub.is_dir():
-                                    ade20k_root = sub
-                                    print(f"    Resolved root: {ade20k_root}")
-                                    break
-                        # If still not found, the ade20k dir itself might BE the root
-                        if not ade20k_root:
-                            if (candidate / "images").exists() or (candidate / "annotations").exists():
-                                ade20k_root = candidate
-                                print(f"    Using as root: {ade20k_root}")
-                        if ade20k_root:
-                            break
-            except Exception:
-                pass
-
-    if ade20k_root:
-        print(f"\n  ✓ Found ADE20K in inputs at: {ade20k_root}")
-        print(f"    Contents:")
-        try:
-            for p in sorted(ade20k_root.iterdir())[:15]:
-                label = "📁" if p.is_dir() else "📄"
-                print(f"      {label} {p.name}")
-        except Exception:
-            pass
-        return ade20k_root
+        # 3. Search for annotations/training
+        found_ann = list(KAGGLE_INPUT.rglob("annotations"))
+        for ann_dir in found_ann:
+            if (ann_dir / "training").exists() or (ann_dir / "train").exists():
+                ade20k_root = ann_dir.parent
+                print(f"    ✓ Found ADE20K root via annotations/ folder at: {ade20k_root}")
+                return ade20k_root
 
     # Strategy 5: Automatically download from HuggingFace mirror or MIT CSAIL!
-    print("\n  [INFO] ADE20K was not found in inputs.")
-    print("  [INFO] Initiating automatic download...")
+    print("\n  [INFO] ADE20K was not found in inputs. Initiating automatic download...")
     
     import urllib.request
     import zipfile
@@ -261,20 +201,16 @@ def find_ade20k():
     extract_dir = KAGGLE_WORK
     final_dir = extract_dir / "ADEChallengeData2016"
     
-    # Try Hugging Face first (insanely fast CDN, ~100MB/s), fallback to MIT CSAIL (sometimes slow or offline)
     hf_url = "https://huggingface.co/datasets/zbwxp/ade/resolve/main/ADEChallengeData2016.zip"
     mit_url = "http://data.csail.mit.edu/places/ADEchallenge/ADEChallengeData2016.zip"
     
     download_success = False
     for name, url in [("HuggingFace CDN (Fast)", hf_url), ("MIT CSAIL (Official)", mit_url)]:
         print(f"\n    Trying download from {name} ...")
-        print(f"    Saving to {zip_path}")
-        print("    Note: Make sure 'Internet on' is enabled in your Kaggle Notebook settings (right sidebar -> Session options).")
-        
         try:
             if zip_path.exists():
                 zip_path.unlink()
-                
+            
             last_reported = -1
             def progress_hook(block_num, block_size, total_size):
                 nonlocal last_reported
@@ -284,46 +220,26 @@ def find_ade20k():
                     if percent % 10 == 0 and percent != last_reported:
                         print(f"      Downloaded: {downloaded / 1024**2:.1f} MB / {total_size / 1024**2:.1f} MB ({percent}%)")
                         last_reported = percent
-                else:
-                    if block_num % 1000 == 0:
-                        print(f"      Downloaded: {downloaded / 1024**2:.1f} MB")
             
             urllib.request.urlretrieve(url, zip_path, progress_hook)
-            print(f"    ✓ Download complete! Size: {zip_path.stat().st_size / 1024**2:.1f} MB")
             download_success = True
             break
         except Exception as e:
             print(f"    ✗ Download from {name} failed: {e}")
-            if zip_path.exists():
-                try:
-                    zip_path.unlink()
-                except:
-                    pass
-                    
+            
     if download_success:
         try:
-            print("  [INFO] Extracting zip file (this takes ~1-2 mins) ...")
+            print("  [INFO] Extracting zip file...")
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(extract_dir)
-            print("  ✓ Extraction complete!")
-            
-            # Clean up zip file
             if zip_path.exists():
                 zip_path.unlink()
-                print("  ✓ Removed temporary ZIP file.")
-                
             if final_dir.exists():
-                print(f"  ✓ Resolved downloaded ADE20K root to: {final_dir}")
                 return final_dir
         except Exception as e:
             print(f"  [ERROR] Extraction failed: {e}")
-    print("\n  ✗ FATAL: Unable to find or download the ADE20K dataset.")
-    print("  To resolve this:")
-    print("  1. Enable 'Internet' in Kaggle settings (right sidebar -> Session options -> Internet on) and re-run.")
-    print("  OR")
-    print("  2. Manually add an active ADE20K Dataset by searching for 'ADEChallengeData2016' under '+ Add Input'.")
+            
     sys.exit(1)
-
 
 # ──────────────────────────────────────────────
 # STEP 2: REMAP TO BINARY FREE SPACE
@@ -340,12 +256,14 @@ def decode_mask(mask_path: Path) -> np.ndarray:
         return (r.astype(np.int32) // 10) * 256 + g.astype(np.int32)
     raise ValueError(f"Unexpected mask shape: {arr.shape}")
 
-
 def convert_ade20k_to_binary(ade20k_root: Path) -> Path:
-    """Convert ADE20K to binary free-space dataset."""
+    """Convert ADE20K to binary free-space dataset, keeping only indoor categories."""
     print("\n" + "=" * 60)
-    print("  STEP 2: CONVERTING ADE20K → BINARY FREE SPACE")
+    print("  STEP 2: CONVERTING ADE20K → BINARY FREE SPACE (INDOOR ONLY)")
     print("=" * 60)
+
+    # Get indoor categories stems
+    indoor_stems = get_indoor_stems(ade20k_root)
 
     img_base = ade20k_root / "images"
     ann_base = ade20k_root / "annotations"
@@ -371,20 +289,43 @@ def convert_ade20k_to_binary(ade20k_root: Path) -> Path:
         out_img.mkdir(parents=True, exist_ok=True)
         out_mask.mkdir(parents=True, exist_ok=True)
 
-        img_files = sorted(list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png")))
+        img_files = sorted(list(img_dir.rglob("*.jpg")) + list(img_dir.rglob("*.png")))
         converted = 0
+        skipped_not_indoor = 0
         has_walkable = 0
 
         print(f"\n  Processing {split} ({len(img_files)} images)...")
 
         for img_path in img_files:
-            # Find annotation: support stem.png, stem_seg.png, etc.
+            # Indoor filtering
+            is_indoor = False
+            if indoor_stems and img_path.stem in indoor_stems:
+                is_indoor = True
+            
+            # Always check path keywords as well to handle nested folder structures
+            path_str = str(img_path).lower()
+            if any(kw in path_str for kw in INDOOR_KEYWORDS):
+                is_indoor = True
+
+            if not is_indoor:
+                skipped_not_indoor += 1
+                continue
+
+            # Find corresponding annotation (handles flat and hierarchical mirrored paths)
+            rel_path = img_path.relative_to(img_dir)
             ann_path = None
-            for candidate_name in [f"{img_path.stem}.png", f"{img_path.stem}_seg.png", f"{img_path.stem}.tif"]:
-                candidate = ann_dir / candidate_name
+            for ext in [".png", ".tif", ".tiff"]:
+                # Standard matching
+                candidate = ann_dir / rel_path.with_suffix(ext)
                 if candidate.exists():
                     ann_path = candidate
                     break
+                # MIT CSAIL '_seg' suffix matching
+                candidate_seg = ann_dir / rel_path.parent / f"{rel_path.stem}_seg{ext}"
+                if candidate_seg.exists():
+                    ann_path = candidate_seg
+                    break
+            
             if not ann_path:
                 continue
 
@@ -393,7 +334,7 @@ def convert_ade20k_to_binary(ade20k_root: Path) -> Path:
             except Exception:
                 continue
 
-            # Binary mask
+            # Binary mask mapping: walkable=1, obstacle=0
             binary = np.isin(class_mask, list(WALKABLE_PIXEL_VALUES)).astype(np.uint8)
 
             # Resize
@@ -417,7 +358,7 @@ def convert_ade20k_to_binary(ade20k_root: Path) -> Path:
             if converted % 1000 == 0:
                 print(f"    Processed {converted}...")
 
-        print(f"    {split}: {converted} images, {has_walkable} with walkable area ({100*has_walkable/max(converted,1):.0f}%)")
+        print(f"    {split}: {converted} indoor images converted, skipped {skipped_not_indoor} outdoor images, {has_walkable} with walkable area ({100*has_walkable/max(converted,1):.0f}%)")
 
     print(f"\n  ✓ Binary free-space dataset ready at: {DATA_DIR}")
     return DATA_DIR
@@ -525,12 +466,55 @@ class DiceLoss(nn.Module):
         return 1.0 - dice.mean()
 
 
+def compute_class_weights(mask_dir, num_samples=500):
+    """
+    Dynamically scan a sample of training masks to calculate class weights
+    based on inverse pixel frequencies.
+    """
+    print("\n  Estimating class weights dynamically...")
+    mask_paths = list(Path(mask_dir).glob("*.png"))
+    if not mask_paths:
+        print("    [WARN] No masks found to compute weights, using default [1.0, 3.0]")
+        return torch.tensor([1.0, 3.0])
+    
+    samples = random.sample(mask_paths, min(num_samples, len(mask_paths)))
+    
+    total_pixels = 0
+    class_counts = np.zeros(2, dtype=np.int64)
+    
+    for p in samples:
+        try:
+            m = np.array(Image.open(p))
+            # 0 = non-walkable, 255 = walkable
+            walkable = (m > 127).astype(np.int64)
+            
+            c1 = walkable.sum()
+            c0 = walkable.size - c1
+            
+            class_counts[0] += c0
+            class_counts[1] += c1
+            total_pixels += walkable.size
+        except Exception as e:
+            continue
+            
+    if class_counts[0] == 0 or class_counts[1] == 0:
+        print("    [WARN] One of the classes has 0 pixels in sample, using default [1.0, 3.0]")
+        return torch.tensor([1.0, 3.0])
+        
+    # Inverse frequency weights: total_pixels / (num_classes * class_count)
+    weights = total_pixels / (2.0 * class_counts)
+    # Normalize weights so that the weight for class 0 (obstacle) is 1.0
+    weights = weights / weights[0]
+    
+    print(f"    Class counts: Obstacle={class_counts[0]:,}, Walkable={class_counts[1]:,}")
+    print(f"    Dynamic class weights: Obstacle={weights[0]:.4f}, Walkable={weights[1]:.4f}")
+    
+    return torch.tensor(weights, dtype=torch.float32)
+
+
 class CombinedLoss(nn.Module):
-    def __init__(self, device=None):
+    def __init__(self, weight, device=None):
         super().__init__()
-        # Weight the walkable class higher (class 1) to combat class imbalance
-        # Most pixels are non-walkable, so upweight walkable to improve recall
-        weight = torch.tensor([1.0, 3.0])
         if device:
             weight = weight.to(device)
         self.ce = nn.CrossEntropyLoss(weight=weight)
@@ -600,7 +584,8 @@ def train_model(data_dir):
     print(f"  Phase 1 (frozen backbone): {trainable:,} / {total:,} trainable params")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
-    criterion = CombinedLoss(device=device)
+    class_weights = compute_class_weights(data_dir / "masks" / "train")
+    criterion = CombinedLoss(weight=class_weights, device=device)
     
     if HAS_MODERN_AMP:
         scaler = GradScaler('cuda', enabled=torch.cuda.is_available())

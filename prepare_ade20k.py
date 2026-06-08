@@ -37,20 +37,11 @@ from PIL import Image
 # We list the 1-indexed pixel values that represent walkable surfaces.
 WALKABLE_PIXEL_VALUES = {
     4,   # floor, flooring
-    7,   # road, route
-    10,  # grass
-    12,  # sidewalk, pavement
-    14,  # earth, ground
-    18,  # field
-    22,  # path
     29,  # rug, carpet
-    30,  # stairs (debatable — include for accessibility; remove if too noisy)
-    53,  # runway
-    55,  # dirt track
 }
 
-# Conservative set (remove grass, stairs, field for tighter "paved path" focus):
-WALKABLE_CONSERVATIVE = {4, 7, 12, 14, 22, 29}
+# Conservative set:
+WALKABLE_CONSERVATIVE = {4, 29}
 
 # Default output structure
 DEFAULT_ADE20K_DIR = Path("./data/ade20k")
@@ -152,12 +143,44 @@ def resize_mask(mask: np.ndarray, size: int) -> np.ndarray:
 # DATASET CONVERSION
 # ──────────────────────────────────────────────
 
+INDOOR_KEYWORDS = {'corridor', 'hallway', 'office', 'living_room', 'kitchen', 'lobby', 'room'}
+
+def get_indoor_stems(ade20k_root: Path) -> set:
+    """Parse sceneCategories.txt if it exists to get indoor image names."""
+    stems = set()
+    categories_file = ade20k_root / "sceneCategories.txt"
+    if not categories_file.exists():
+        # Search recursively for sceneCategories.txt
+        found = list(ade20k_root.rglob("sceneCategories.txt"))
+        if found:
+            categories_file = found[0]
+            
+    if categories_file.exists():
+        try:
+            with open(categories_file, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        stem = parts[0]
+                        category = parts[1].lower()
+                        if any(kw in category for kw in INDOOR_KEYWORDS):
+                            stems.add(stem)
+            print(f"  [FILTER] Parsed {len(stems)} indoor image stems from {categories_file.name}")
+        except Exception as e:
+            print(f"  [WARN] Failed to parse categories file: {e}")
+    return stems
+
+# ──────────────────────────────────────────────
+# DATASET CONVERSION
+# ──────────────────────────────────────────────
+
 def convert_split(
     img_dir: Path,
     ann_dir: Path,
     out_img_dir: Path,
     out_mask_dir: Path,
     walkable_ids: set,
+    indoor_stems: set,
     img_size: int = 320,
 ) -> dict:
     """
@@ -168,21 +191,41 @@ def convert_split(
     out_img_dir.mkdir(parents=True, exist_ok=True)
     out_mask_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect image/annotation pairs
-    img_files = sorted(list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png")))
+    # Collect image/annotation pairs (recursively to support hierarchical CSAIL structure)
+    img_files = sorted(list(img_dir.rglob("*.jpg")) + list(img_dir.rglob("*.png")))
     
-    stats = {"total": 0, "converted": 0, "skipped_no_ann": 0, "has_walkable": 0}
+    stats = {"total": 0, "converted": 0, "skipped_no_ann": 0, "skipped_not_indoor": 0, "has_walkable": 0}
 
     for img_path in img_files:
         stats["total"] += 1
         
-        # Find corresponding annotation
-        stem = img_path.stem
+        # Check if the image is an indoor scene
+        is_indoor = False
+        if indoor_stems and img_path.stem in indoor_stems:
+            is_indoor = True
+        
+        # Always check path keywords as well to handle nested folder structures
+        path_str = str(img_path).lower()
+        if any(kw in path_str for kw in INDOOR_KEYWORDS):
+            is_indoor = True
+                
+        if not is_indoor:
+            stats["skipped_not_indoor"] += 1
+            continue
+
+        # Find corresponding annotation (handles flat and hierarchical mirrored paths)
+        rel_path = img_path.relative_to(img_dir)
         ann_path = None
         for ext in [".png", ".tif", ".tiff"]:
-            candidate = ann_dir / f"{stem}{ext}"
+            # Standard matching
+            candidate = ann_dir / rel_path.with_suffix(ext)
             if candidate.exists():
                 ann_path = candidate
+                break
+            # MIT CSAIL '_seg' suffix matching
+            candidate_seg = ann_dir / rel_path.parent / f"{rel_path.stem}_seg{ext}"
+            if candidate_seg.exists():
+                ann_path = candidate_seg
                 break
         
         if ann_path is None:
@@ -211,14 +254,14 @@ def convert_split(
 
         # Save
         img_resized.save(out_img_dir / f"{stem}.jpg", quality=95)
-        # Save mask as single-channel PNG (0 or 1 → scale to 0 or 255 for visibility)
+        # Save mask as single-channel PNG (0 or 255)
         mask_pil = Image.fromarray(mask_resized * 255)
         mask_pil.save(out_mask_dir / f"{stem}.png")
 
         stats["converted"] += 1
 
         if stats["converted"] % 500 == 0:
-            print(f"    Processed {stats['converted']}/{stats['total']}...")
+            print(f"    Processed {stats['converted']}...")
 
     return stats
 
@@ -232,9 +275,10 @@ def prepare_dataset(ade20k_root: Path, output_dir: Path, walkable_ids: set,
     """
     banner("PREPARING ADE20K → BINARY FREE SPACE DATASET")
 
+    # Get indoor stems
+    indoor_stems = get_indoor_stems(ade20k_root)
+
     # Detect directory structure
-    # SceneParse150 structure: images/training, annotations/training
-    # Alternative: images/train, annotations/train
     img_base = ade20k_root / "images"
     ann_base = ade20k_root / "annotations"
 
@@ -259,12 +303,13 @@ def prepare_dataset(ade20k_root: Path, output_dir: Path, walkable_ids: set,
         out_img = output_dir / "images" / split_name
         out_mask = output_dir / "masks" / split_name
 
-        stats = convert_split(img_dir, ann_dir, out_img, out_mask, walkable_ids, img_size)
+        stats = convert_split(img_dir, ann_dir, out_img, out_mask, walkable_ids, indoor_stems, img_size)
 
-        print(f"    Total images:    {stats['total']}")
-        print(f"    Converted:       {stats['converted']}")
-        print(f"    Has walkable:    {stats['has_walkable']} ({100*stats['has_walkable']/max(stats['converted'],1):.0f}%)")
-        print(f"    Skipped (no ann):{stats['skipped_no_ann']}")
+        print(f"    Total images:          {stats['total']}")
+        print(f"    Converted (indoor):    {stats['converted']}")
+        print(f"    Skipped (outdoor):     {stats['skipped_not_indoor']}")
+        print(f"    Has walkable:          {stats['has_walkable']} ({100*stats['has_walkable']/max(stats['converted'],1):.0f}%)")
+        print(f"    Skipped (no ann):      {stats['skipped_no_ann']}")
 
     # Write dataset info YAML (for training script)
     yaml_path = output_dir / "dataset.yaml"

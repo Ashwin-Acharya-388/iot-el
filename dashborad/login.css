@@ -1,0 +1,338 @@
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+:root {
+    --neon-green: #35ff4f;
+    --neon-cyan: #00e5ff;
+    --neon-magenta: #ff00ff;
+    --dark-bg: #060a10;
+    --panel-bg: rgba(8, 16, 28, 0.92);
+    --border-color: rgba(0, 229, 255, 0.25);
+    --border-glow: rgba(0, 229, 255, 0.5);
+    --text-dim: rgba(0, 229, 255, 0.55);
+    --danger: #ff3131;
+}
+
+body {
+    min-height: 100vh;
+    background: var(--dark-bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Share Tech Mono', monospace;
+    overflow: hidden;
+    position: relative;
+}
+
+/* Animated grid background */
+.bg-grid {
+    position: fixed;
+    inset: 0;
+    background-image:
+        linear-gradient(rgba(0, 229, 255, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 229, 255, 0.04) 1px, transparent 1px);
+    background-size: 40px 40px;
+    animation: grid-drift 20s linear infinite;
+    z-index: 0;
+}
+
+@keyframes grid-drift {
+    from {
+        background-position: 0 0;
+    }
+
+    to {
+        background-position: 0 40px;
+    }
+}
+
+/* CRT scanline effect */
+.scanline {
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(0deg,
+            transparent,
+            transparent 2px,
+            rgba(0, 0, 0, 0.08) 2px,
+            rgba(0, 0, 0, 0.08) 4px);
+    pointer-events: none;
+    z-index: 1;
+}
+
+/* Login container */
+.login-wrapper {
+    position: relative;
+    z-index: 10;
+    width: 100%;
+    max-width: 420px;
+    padding: 20px;
+}
+
+.login-box {
+    background: var(--panel-bg);
+    border: 1px solid var(--border-color);
+    border-top: 2px solid var(--neon-cyan);
+    padding: 40px 36px;
+    position: relative;
+    box-shadow:
+        0 0 40px rgba(0, 229, 255, 0.06),
+        inset 0 0 60px rgba(0, 0, 0, 0.4);
+    animation: box-appear 0.5s ease forwards;
+}
+
+@keyframes box-appear {
+    from {
+        opacity: 0;
+        transform: translateY(16px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Corner brackets */
+.login-box::before,
+.login-box::after {
+    content: '';
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    border-color: var(--neon-cyan);
+    border-style: solid;
+}
+
+.login-box::before {
+    bottom: -1px;
+    left: -1px;
+    border-width: 0 0 2px 2px;
+}
+
+.login-box::after {
+    bottom: -1px;
+    right: -1px;
+    border-width: 0 2px 2px 0;
+}
+
+/* Brand header */
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 28px;
+}
+
+.brand-icon {
+    width: 52px;
+    height: 52px;
+    border: 1px solid var(--border-glow);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    flex-shrink: 0;
+    animation: pulse-border 2s ease-in-out infinite;
+}
+
+@keyframes pulse-border {
+
+    0%,
+    100% {
+        border-color: rgba(0, 229, 255, 0.4);
+        box-shadow: none;
+    }
+
+    50% {
+        border-color: rgba(0, 229, 255, 0.9);
+        box-shadow: 0 0 10px rgba(0, 229, 255, 0.3);
+    }
+}
+
+.brand h1 {
+    font-family: 'Orbitron', monospace;
+    font-size: 17px;
+    font-weight: 900;
+    color: var(--neon-cyan);
+    letter-spacing: 0.15em;
+    line-height: 1.2;
+    text-shadow: 0 0 12px rgba(0, 229, 255, 0.4);
+}
+
+.brand p {
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.25em;
+    margin-top: 3px;
+}
+
+.divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-glow), transparent);
+    margin-bottom: 24px;
+}
+
+/* Error message */
+.error-msg {
+    background: rgba(255, 49, 49, 0.12);
+    border: 1px solid rgba(255, 49, 49, 0.45);
+    color: var(--danger);
+    font-size: 12px;
+    padding: 10px 14px;
+    margin-bottom: 20px;
+    letter-spacing: 0.05em;
+    animation: shake 0.35s ease;
+}
+
+@keyframes shake {
+
+    0%,
+    100% {
+        transform: translateX(0);
+    }
+
+    25% {
+        transform: translateX(-6px);
+    }
+
+    75% {
+        transform: translateX(6px);
+    }
+}
+
+/* Form fields */
+.field {
+    margin-bottom: 20px;
+    position: relative;
+}
+
+.field label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.2em;
+    margin-bottom: 8px;
+}
+
+.field input {
+    width: 100%;
+    background: rgba(0, 229, 255, 0.03);
+    border: 1px solid var(--border-color);
+    color: var(--neon-cyan);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 14px;
+    padding: 12px 14px;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    caret-color: var(--neon-cyan);
+}
+
+.field input::placeholder {
+    color: rgba(0, 229, 255, 0.2);
+}
+
+.field input:focus {
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 0 1px rgba(0, 229, 255, 0.15), inset 0 0 20px rgba(0, 229, 255, 0.04);
+}
+
+/* Password toggle */
+.toggle-pw {
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    cursor: pointer;
+    font-size: 14px;
+    opacity: 0.4;
+    transition: opacity 0.2s;
+    user-select: none;
+}
+
+.toggle-pw:hover {
+    opacity: 0.9;
+}
+
+/* Login button */
+.login-btn {
+    width: 100%;
+    background: transparent;
+    border: 1px solid var(--neon-cyan);
+    color: var(--neon-cyan);
+    font-family: 'Orbitron', monospace;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    padding: 14px;
+    cursor: pointer;
+    margin-top: 8px;
+    transition: background 0.2s, box-shadow 0.2s, transform 0.1s;
+    position: relative;
+    overflow: hidden;
+}
+
+.login-btn::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent 0%, rgba(0, 229, 255, 0.08) 50%, transparent 100%);
+    transform: translateX(-100%);
+    transition: transform 0.4s ease;
+}
+
+.login-btn:hover::before {
+    transform: translateX(100%);
+}
+
+.login-btn:hover {
+    background: rgba(0, 229, 255, 0.08);
+    box-shadow: 0 0 20px rgba(0, 229, 255, 0.2);
+}
+
+.login-btn:active {
+    transform: scale(0.98);
+}
+
+.login-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Status row */
+.status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 24px;
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.12em;
+}
+
+.dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--neon-green);
+    box-shadow: 0 0 8px var(--neon-green);
+    animation: blink 1.5s ease-in-out infinite;
+    flex-shrink: 0;
+}
+
+@keyframes blink {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.3;
+    }
+}

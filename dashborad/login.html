@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Navigation — Login</title>
+    <link rel="stylesheet" href="login.css">
+</head>
+
+<body>
+
+    <div class="bg-grid"></div>
+    <div class="scanline"></div>
+
+    <div class="login-wrapper">
+
+        <div class="login-box">
+
+            <div class="brand">
+                <div class="brand-icon">
+                    <span class="eye-icon">👁</span>
+                </div>
+                <div>
+                    <h1>AI NAVIGATION</h1>
+                    <p>COMMAND CENTER</p>
+                </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <form method="POST" action="/login">
+
+                <div id="error-msg" class="error-msg" style="display: none;">
+                    ⚠ Invalid credentials. Access denied.
+                </div>
+
+                <div class="field">
+                    <label for="username">USERNAME</label>
+                    <input type="text" id="username" name="username" placeholder="Enter username" autocomplete="off"
+                        required />
+                </div>
+
+                <div class="field">
+                    <label for="password">PASSWORD</label>
+                    <input type="password" id="password" name="password" placeholder="Enter password" required />
+                    <span class="toggle-pw" onclick="togglePassword()" title="Toggle visibility">👁</span>
+                </div>
+
+                <button class="login-btn" type="submit">AUTHENTICATE</button>
+
+            </form>
+
+            <div class="status-row">
+                <div class="dot"></div>
+                <span>SYSTEM ONLINE · AI NAVIGATION ACTIVE</span>
+            </div>
+
+        </div>
+
+    </div>
+
+    <script>
+        function togglePassword() {
+            const pw = document.getElementById('password');
+            pw.type = pw.type === 'password' ? 'text' : 'password';
+        }
+    </script>
+
+</body>
+
+</html>

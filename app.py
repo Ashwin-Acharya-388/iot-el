@@ -11,6 +11,9 @@ import atexit
 from pathlib import Path
 from flask import Flask, Response, request, jsonify, send_from_directory
 
+from flask import session, redirect, url_for, request, render_template
+
+
 # Add parent directory to path to allow importing modules
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
@@ -64,6 +67,24 @@ if HOST == "127.0.0.1":
     HOST = "0.0.0.0"
 
 app = Flask(__name__, static_folder=UI_FOLDER, template_folder=UI_FOLDER)
+app.secret_key = 'your-secret-key-here'
+
+CREDENTIALS = {"admin": "blind2024"}
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        u = request.form.get('username')
+        p = request.form.get('password')
+        if CREDENTIALS.get(u) == p:
+            session['user'] = u
+            return redirect(url_for('index'))
+        return send_from_directory(UI_FOLDER, 'login.html')
+    return send_from_directory(UI_FOLDER, 'login.html')
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
 voice = VoiceCommands(cooldown=1.2) if VoiceCommands is not None else None
 
 # Shared state between background thread and Flask routes
@@ -436,7 +457,8 @@ def run_navigation_loop():
 
 @app.route('/')
 def index():
-    """Serves the dashboard's main index.html file."""
+    if 'user' not in session:
+        return redirect(url_for('login'))
     return send_from_directory(UI_FOLDER, 'index.html')
 
 @app.route('/<path:path>')
