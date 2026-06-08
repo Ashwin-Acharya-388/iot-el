@@ -84,7 +84,11 @@ function updateDashboard(data) {
       }
     }
 
-    if (currentCommand && currentCommand !== lastSpoken) {
+    const shouldSpeak = currentCommand &&
+      currentCommand !== lastSpoken &&
+      (data.obstacles?.length > 0 || (data.direction || 'FORWARD') !== 'FORWARD');
+
+    if (shouldSpeak) {
       fetch(`/speak?text=${encodeURIComponent(currentCommand)}`)
         .catch(() => console.warn('[FRONTEND] Voice request failed.'));
       lastSpoken = currentCommand;
