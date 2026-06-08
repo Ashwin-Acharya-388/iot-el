@@ -100,7 +100,7 @@ def open_camera():
 
         for backend in backend_order:
             try:
-                if isinstance(candidate, str) and os.path.exists(candidate):
+                if isinstance(candidate, str) and not candidate.isdigit():
                     cap = cv2.VideoCapture(candidate, backend)
                 else:
                     cap = cv2.VideoCapture(int(candidate), backend)
