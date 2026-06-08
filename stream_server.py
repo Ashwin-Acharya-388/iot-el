@@ -1,17 +1,47 @@
 import glob
 import os
+import sys
 import threading
 import time
-import cv2
+import base64
 import numpy as np
+import cv2
+import atexit
+from pathlib import Path
 from flask import Flask, Response, request, jsonify, send_from_directory
+
+# Add parent directory to path to allow importing modules
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(BASE_DIR)
 
 try:
     from voice_commands import VoiceCommands
-except Exception:
+except Exception as e:
+    print(f"[AUDIO] Could not import VoiceCommands: {e}")
     VoiceCommands = None
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+try:
+    from navigation_system_rpi import (
+        ONNXInference,
+        SimpleTracker,
+        TemporalSmoother,
+        DirectionVoter,
+        find_safe_direction,
+        estimate_distance,
+        CLASS_NAMES,
+    )
+    HAS_YOLO_LIBS = True
+except Exception as e:
+    print(f"[YOLO] Could not import navigation_system_rpi: {e}")
+    HAS_YOLO_LIBS = False
+
+try:
+    import mqtt_client
+    HAS_MQTT = True
+except Exception as e:
+    print(f"[MQTT] Could not import mqtt_client: {e}")
+    HAS_MQTT = False
+
 UI_FOLDER = os.path.join(BASE_DIR, 'iot-el', 'dashborad')
 if not os.path.isdir(UI_FOLDER):
     UI_FOLDER = os.path.join(BASE_DIR, 'dashborad')
@@ -22,39 +52,24 @@ CAMERA_INDEX = int(os.getenv('CAMERA_INDEX', '0'))
 CAMERA_DEVICE = os.getenv('CAMERA_DEVICE', '').strip()
 
 app = Flask(__name__, static_folder=UI_FOLDER, template_folder=UI_FOLDER)
-
 voice = VoiceCommands(cooldown=1.2) if VoiceCommands is not None else None
 
-last_alert_text = ""
-last_alert_time = 0.0
-
-# Global dictionary placeholder to safely handle telemetry metrics if your UI calls an API
-telemetry_data = {
+# Shared state between background thread and Flask routes
+latest_jpeg_frame = None
+latest_telemetry = {
     "direction": "FORWARD",
-    "fps": 18.5,
+    "fps": 0.0,
     "obstacle_count": 0,
     "status": {
-        "camera": "Connected",
-        "model": "Running",
+        "camera": "Offline",
+        "model": "Offline",
         "server": "Active"
     },
     "obstacles": []
 }
-
-# 1. SERVE FRONTEND DASHBOARD
-@app.route('/')
-def index():
-    """Serves your team's main index.html dashboard file automatically."""
-    return send_from_directory(UI_FOLDER, 'index.html')
-
-@app.route('/<path:path>')
-def serve_static(path):
-    """Serves accompanying static files like style.css and script.js smoothly."""
-    return send_from_directory(UI_FOLDER, path)
-
-@app.route('/favicon.ico')
-def favicon():
-    return '', 204
+telemetry_lock = threading.Lock()
+frame_lock = threading.Lock()
+shutdown_event = threading.Event()
 
 def open_camera():
     candidates = []
@@ -90,6 +105,11 @@ def open_camera():
                 else:
                     cap = cv2.VideoCapture(int(candidate), backend)
                 if cap.isOpened():
+                    # Set RPi-optimized capture resolution
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    
                     ok, _ = cap.read()
                     if ok:
                         print(f"[CAMERA] Using camera source: {candidate} (backend={backend})")
@@ -101,9 +121,8 @@ def open_camera():
     print("[CAMERA] No working camera device found.")
     return None
 
-
-def detect_obstacles(frame):
-    """Simple fallback obstacle detector for live dashboard telemetry."""
+def detect_obstacles_canny(frame):
+    """Fallback Canny edge-based obstacle detector."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (9, 9), 0)
     edges = cv2.Canny(blur, 60, 180)
@@ -146,98 +165,319 @@ def detect_obstacles(frame):
     if closest['distance'] < 1.8:
         direction = "STOP"
     elif closest['center_x'] < 0.33:
-        direction = "Slight Left"
+        direction = "SLIGHT LEFT"
     elif closest['center_x'] > 0.67:
-        direction = "Slight Right"
+        direction = "SLIGHT RIGHT"
     else:
         direction = "FORWARD"
 
     return direction, obstacles, len(obstacles)
 
+def run_navigation_loop():
+    global latest_jpeg_frame, latest_telemetry
+    print("\n[BACKEND] Starting Navigation and Video Stream Loop...")
 
-@app.route('/video')
-def video_feed():
-    """Captures live webcam frames from the Raspberry Pi and streams them to the UI image tags."""
-    def generate_frames():
-        camera = open_camera()
-        if camera is None:
-            return
+    # 1. Initialize Camera
+    cap = open_camera()
+    camera_active = (cap is not None)
 
-        frame_timer = time.perf_counter()
-        while True:
-            success, frame = camera.read()
-            if not success:
-                break
+    # 2. Initialize ONNX Inference Engine
+    model_active = False
+    engine = None
+    tracker = None
+    smoother = None
+    voter = None
 
-            direction, obstacles, obstacle_count = detect_obstacles(frame)
-            global last_alert_text, last_alert_time
-            telemetry_data.update({
+    if HAS_YOLO_LIBS:
+        model_path = Path(__file__).parent / "models" / "yolov8n_qat.onnx"
+        if model_path.exists():
+            try:
+                engine = ONNXInference(model_path)
+                tracker = SimpleTracker(max_age=5, min_hits=2)
+                smoother = TemporalSmoother(window=3)
+                voter = DirectionVoter(window=5)
+                model_active = True
+                print("[BACKEND] ✓ ONNX Model loaded successfully.")
+            except Exception as e:
+                print(f"[BACKEND] ⚠ Failed to load ONNX model: {e}. Running in Canny edge mode.")
+        else:
+            print(f"[BACKEND] ⚠ Model not found at {model_path}. Running in Canny edge mode.")
+    else:
+        print("[BACKEND] ⚠ YOLO libraries not imported. Running in Canny edge mode.")
+
+    # Simulation variables in case camera fails
+    sim_t = 0.0
+    frame_times = []
+    
+    # Pre-generate standard blank HUD in case of camera error
+    blank_hud = np.zeros((320, 320, 3), dtype=np.uint8)
+    for x in range(0, 320, 40):
+        cv2.line(blank_hud, (x, 0), (x, 320), (20, 20, 40), 1)
+    for y in range(0, 320, 40):
+        cv2.line(blank_hud, (0, y), (320, y), (20, 20, 40), 1)
+    cv2.line(blank_hud, (160, 160), (40, 320), (0, 100, 255), 1)
+    cv2.line(blank_hud, (160, 160), (280, 320), (0, 100, 255), 1)
+
+    while not shutdown_event.is_set():
+        t_start = time.perf_counter()
+        frame = None
+
+        if camera_active:
+            ret, frame = cap.read()
+            if not ret:
+                print("[BACKEND] ⚠ Camera read failed. Releasing camera.")
+                camera_active = False
+                cap.release()
+
+        # If camera is offline, fallback to simulation mode
+        is_simulated = not camera_active
+        if is_simulated:
+            frame = blank_hud.copy()
+
+        # Run detection
+        direction = "FORWARD"
+        obstacles = []
+        obstacle_count = 0
+
+        # Case A: Real Camera + Real YOLO model
+        if not is_simulated and model_active and engine is not None:
+            try:
+                # Preprocess (resizes to 320x320 internally)
+                tensor = engine.preprocess(frame)
+                output = engine.infer(tensor)
+                dets = engine.postprocess(output, conf_thresh=0.45)
+                
+                tracked = tracker.update(dets)
+                smoothed = smoother.update(tracked)
+                
+                raw_direction, closest_obs = find_safe_direction(smoothed)
+                direction = voter.vote(raw_direction).upper()
+                
+                for det in smoothed:
+                    x1, y1, x2, y2 = int(det[0]), int(det[1]), int(det[2]), int(det[3])
+                    conf = det[4]
+                    cls = int(det[5])
+                    dist = estimate_distance(det)
+                    label = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else "obstacle"
+                    
+                    box_w = x2 - x1
+                    box_h = y2 - y1
+                    cx = (x1 + box_w / 2) / 320.0
+                    cy = (y1 + box_h / 2) / 320.0
+                    
+                    obstacles.append({
+                        "label": label.capitalize(),
+                        "distance": round(float(dist), 1),
+                        "x": x1,
+                        "y": y1,
+                        "w": box_w,
+                        "h": box_h,
+                        "center_x": round(float(cx), 2),
+                        "center_y": round(float(cy), 2),
+                        "conf": round(float(conf), 2)
+                    })
+                obstacles = sorted(obstacles, key=lambda item: item['distance'])
+                obstacle_count = len(obstacles)
+            except Exception as ex:
+                print(f"[BACKEND] YOLO inference error: {ex}")
+                # Fallback to Canny
+                direction, obstacles, obstacle_count = detect_obstacles_canny(frame)
+        else:
+            # Case B: Camera online but no YOLO, or Simulation mode
+            if is_simulated:
+                # Generate simulated moving obstacles on HUD
+                sim_t += 0.05
+                cy1 = 0.65 + 0.25 * np.sin(sim_t)
+                cx1 = 0.25 + 0.05 * np.cos(sim_t)
+                w1, h1 = 0.12, 0.28
+                x1_min = int((cx1 - w1/2) * 320)
+                x1_max = int((cx1 + w1/2) * 320)
+                y1_min = int((cy1 - h1/2) * 320)
+                y1_max = int((cy1 + h1/2) * 320)
+                
+                cy2 = 0.70 + 0.20 * np.cos(sim_t * 0.7)
+                cx2 = 0.75 + 0.03 * np.sin(sim_t * 0.7)
+                w2, h2 = 0.22, 0.18
+                x2_min = int((cx2 - w2/2) * 320)
+                x2_max = int((cx2 + w2/2) * 320)
+                y2_min = int((cy2 - h2/2) * 320)
+                y2_max = int((cy2 + h2/2) * 320)
+
+                # Simulated distances
+                dist1 = max(0.5, 8.0 - (cy1 * 8.0))
+                dist2 = max(0.5, 8.0 - (cy2 * 8.0))
+
+                obstacles = [
+                    {
+                        "label": "Person",
+                        "distance": round(float(dist1), 1),
+                        "x": x1_min, "y": y1_min, "w": (x1_max - x1_min), "h": (y1_max - y1_min),
+                        "center_x": round(float(cx1), 2), "center_y": round(float(cy1), 2)
+                    },
+                    {
+                        "label": "Vehicle",
+                        "distance": round(float(dist2), 1),
+                        "x": x2_min, "y": y2_min, "w": (x2_max - x2_min), "h": (y2_max - y2_min),
+                        "center_x": round(float(cx2), 2), "center_y": round(float(cy2), 2)
+                    }
+                ]
+                obstacles = sorted(obstacles, key=lambda item: item['distance'])
+                obstacle_count = len(obstacles)
+                
+                closest = obstacles[0]
+                if closest['distance'] < 1.8:
+                    direction = "STOP"
+                elif closest['center_x'] < 0.33:
+                    direction = "SLIGHT LEFT"
+                elif closest['center_x'] > 0.67:
+                    direction = "SLIGHT RIGHT"
+                else:
+                    direction = "FORWARD"
+            else:
+                # Camera online but no YOLO: Run Canny
+                direction, obstacles, obstacle_count = detect_obstacles_canny(frame)
+
+        # Draw boxes and direction on the frame
+        vis = frame.copy()
+        
+        # Resize visual copy to 320x320 if not already
+        if vis.shape[0] != 320 or vis.shape[1] != 320:
+            vis = cv2.resize(vis, (320, 320))
+
+        # Draw Left, Center, Right zone dividers on HUD
+        cv2.line(vis, (int(320 * 0.33), 0), (int(320 * 0.33), 320), (50, 50, 100), 1)
+        cv2.line(vis, (int(320 * 0.67), 0), (int(320 * 0.67), 320), (50, 50, 100), 1)
+
+        for obs in obstacles:
+            x, y, w, h = obs['x'], obs['y'], obs['w'], obs['h']
+            lbl = obs['label']
+            dst = obs['distance']
+            if dst < 2.0:
+                color = (0, 0, 255)  # Red
+            elif dst < 3.5:
+                color = (0, 255, 255)  # Yellow
+            else:
+                color = (0, 255, 0)  # Green
+            cv2.rectangle(vis, (x, y), (x + w, y + h), color, 2)
+            cv2.putText(vis, f"{lbl} {dst:.1f}m", (x, max(15, y - 5)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+
+        # Draw navigation direction at top left
+        cv2.putText(vis, f"DIR: {direction}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+
+        # Calculate FPS
+        t_end = time.perf_counter()
+        frame_times.append(t_end - t_start)
+        if len(frame_times) > 30:
+            frame_times.pop(0)
+        fps = 1.0 / np.mean(frame_times) if frame_times else 0.0
+
+        # Encode frame to JPEG
+        _, buffer = cv2.imencode('.jpg', vis)
+        jpeg_bytes = buffer.tobytes()
+
+        # Update globals safely
+        with frame_lock:
+            latest_jpeg_frame = jpeg_bytes
+
+        with telemetry_lock:
+            latest_telemetry.update({
                 "direction": direction,
-                "fps": round(1.0 / max(0.001, time.perf_counter() - frame_timer), 1),
+                "fps": round(fps, 1),
                 "obstacle_count": obstacle_count,
                 "obstacles": obstacles[:5],
                 "status": {
-                    "camera": "Connected",
-                    "model": "Live Detection",
+                    "camera": "Connected" if camera_active else "Simulated",
+                    "model": "YOLOv8 QAT" if (model_active and not is_simulated) else ("Canny Edge" if not is_simulated else "Simulated"),
                     "server": "Active"
-                },
+                }
             })
-            frame_timer = time.perf_counter()
 
-            if obstacles and obstacles[0]['distance'] < 3.0:
-                alert_text = f"Obstacle {obstacles[0]['distance']} meters ahead"
-                now = time.time()
-                if alert_text != last_alert_text or (now - last_alert_time) > 3.0:
-                    last_alert_text = alert_text
-                    last_alert_time = now
-                    threading.Thread(target=speak_text, args=(alert_text,), daemon=True).start()
+        # Voice alerting logic
+        if voice is not None and len(obstacles) > 0 and obstacles[0]['distance'] < 3.5:
+            alert_text = f"{obstacles[0]['label']}, {obstacles[0]['distance']} meters ahead"
+            voice.speak(alert_text)
 
-            if obstacles:
-                x, y, w, h = obstacles[0]['x'], obstacles[0]['y'], obstacles[0]['w'], obstacles[0]['h']
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
-                cv2.putText(frame, f"{obstacles[0]['label']} {obstacles[0]['distance']}m", (x, max(15, y - 5)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
-                cv2.putText(frame, direction, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        # MQTT telemetry logging
+        if HAS_MQTT and len(obstacles) > 0:
+            try:
+                lbls = [o['label'] for o in obstacles]
+                threading.Thread(
+                    target=mqtt_client.publish_navigation,
+                    args=(direction, lbls, round(fps, 1)),
+                    daemon=True
+                ).start()
+            except Exception:
+                pass
 
-            ret, buffer = cv2.imencode('.jpg', frame)
-            frame_bytes = buffer.tobytes()
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-        camera.release()
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+        # Throttle loop to ~10 FPS (100ms) to prevent Pi CPU pinning
+        sleep_time = max(0.01, 0.10 - (time.perf_counter() - t_start))
+        time.sleep(sleep_time)
 
-# 3. VOICE ALERT ENDPOINT
-def speak_text(text):
-    if voice is not None:
-        try:
-            voice.speak(text)
-            return
-        except Exception as exc:
-            print(f"[AUDIO] VoiceCommands playback failed: {exc}")
-    print(f"[AUDIO] Voice backend unavailable. Text: {text}")
+    # Release camera on exit
+    if camera_active:
+        cap.release()
+    print("[BACKEND] Navigation loop shutdown completed.")
+
+@app.route('/')
+def index():
+    """Serves the dashboard's main index.html file."""
+    return send_from_directory(UI_FOLDER, 'index.html')
+
+@app.route('/<path:path>')
+def serve_static(path):
+    """Serves static files (style.css, script.js)."""
+    return send_from_directory(UI_FOLDER, path)
+
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
+
+@app.route('/video')
+def video_feed():
+    """Streams the latest JPEG frame from memory as MJPEG."""
+    def generate():
+        while True:
+            with frame_lock:
+                frame_bytes = latest_jpeg_frame
+            if frame_bytes is not None:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            time.sleep(0.06)  # Stream at ~16 FPS
+    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/api/telemetry')
+def telemetry():
+    """Returns real-time telemetry JSON."""
+    with telemetry_lock:
+        return jsonify(latest_telemetry)
 
 @app.route('/speak')
 def speak():
-    """Receives navigation text strings and runs them through the laptop audio hardware."""
+    """Receives navigation text and triggers TTS playback."""
     text = request.args.get('text', '').strip()
     if not text:
         return "No text provided", 400
-
     print(f"[AUDIO LOG] System Spoke: {text}")
-    threading.Thread(target=speak_text, args=(text,), daemon=True).start()
+    if voice is not None:
+        voice.speak(text)
     return "OK", 200
 
-# 4. TELEMETRY API ENDPOINT (Optional loop hook for future data logs)
-@app.route('/api/telemetry', methods=['GET', 'POST'])
-def telemetry():
-    global telemetry_data
-    if request.method == 'POST':
-        data = request.json
-        if data:
-            telemetry_data.update(data)
-        return jsonify({"status": "success"})
-    return jsonify(telemetry_data)
+@atexit.register
+def cleanup():
+    shutdown_event.set()
 
 if __name__ == '__main__':
-    print(f"[SERVER] Starting dashboard on http://{HOST}:{PORT} (camera={CAMERA_DEVICE or CAMERA_INDEX})")
-    app.run(host=HOST, port=PORT, threaded=True)
+    # Start the navigation background thread
+    nav_thread = threading.Thread(target=run_navigation_loop, daemon=True)
+    nav_thread.start()
+
+    print(f"\n[SERVER] Starting dashboard on http://{HOST}:{PORT}")
+    try:
+        app.run(host=HOST, port=PORT, threaded=True, debug=False, use_reloader=False)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        shutdown_event.set()
+        nav_thread.join(timeout=2.0)
+        print("[SERVER] Stopped.")

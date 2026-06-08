@@ -39,11 +39,6 @@ function formatCommand(data) {
 }
 
 function updateDashboard(data) {
-  const cameraImg = document.getElementById('camera-feed');
-  if (cameraImg) {
-    cameraImg.src = `/video?ts=${Date.now()}`;
-  }
-
   const dirElement = document.getElementById('val-direction');
   if (dirElement) dirElement.innerText = data.direction || 'FORWARD';
 
@@ -157,3 +152,11 @@ updateClock();
 setInterval(updateClock, 1000);
 loadTelemetry();
 setInterval(loadTelemetry, 1000);
+
+// Initialize camera stream once on page load
+window.addEventListener('DOMContentLoaded', () => {
+  const cameraImg = document.getElementById('camera-feed');
+  if (cameraImg) {
+    cameraImg.src = '/video';
+  }
+});
