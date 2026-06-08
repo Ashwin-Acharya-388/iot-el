@@ -154,9 +154,7 @@ loadTelemetry();
 setInterval(loadTelemetry, 1000);
 
 // Initialize camera stream once on page load
-window.addEventListener('DOMContentLoaded', () => {
-  const cameraImg = document.getElementById('camera-feed');
-  if (cameraImg) {
-    cameraImg.src = '/video';
-  }
-});
+const cameraImg = document.getElementById('camera-feed');
+if (cameraImg) {
+  cameraImg.src = '/video';
+}
