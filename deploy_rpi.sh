@@ -15,4 +15,4 @@ rsync -av --delete \
   --exclude 'audio/*.wav' \
   . "${RPI_HOST}:${TARGET_DIR}/"
 
-ssh "${RPI_HOST}" "cd ${TARGET_DIR} && ( [ -d venv ] || python3 -m venv venv ) && ./venv/bin/pip install -r requirements.txt && CAMERA_INDEX='${CAMERA_INDEX}' CAMERA_DEVICE='${CAMERA_DEVICE}' ./venv/bin/python stream_server.py"
+ssh "${RPI_HOST}" "cd ${TARGET_DIR} && ( ./venv/bin/python -c 'import sys' 2>/dev/null || ( echo 'Recreating broken virtual environment...' && rm -rf venv && python3 -m venv venv ) ) && ./venv/bin/pip install -r requirements.txt && CAMERA_INDEX='${CAMERA_INDEX}' CAMERA_DEVICE='${CAMERA_DEVICE}' ./venv/bin/python stream_server.py"
