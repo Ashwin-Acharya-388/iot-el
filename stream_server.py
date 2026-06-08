@@ -399,14 +399,22 @@ def run_navigation_loop():
             voice.speak(alert_text)
 
         # MQTT telemetry logging
-        if HAS_MQTT and len(obstacles) > 0:
+        if HAS_MQTT:
             try:
-                lbls = [o['label'] for o in obstacles]
+                # Publish status (e.g. STOP, FORWARD)
                 threading.Thread(
-                    target=mqtt_client.publish_navigation,
-                    args=(direction, lbls, round(fps, 1)),
+                    target=mqtt_client.publish_status,
+                    args=(direction,),
                     daemon=True
                 ).start()
+
+                if len(obstacles) > 0:
+                    lbls = [o['label'] for o in obstacles]
+                    threading.Thread(
+                        target=mqtt_client.publish_navigation,
+                        args=(direction, lbls, round(fps, 1)),
+                        daemon=True
+                    ).start()
             except Exception:
                 pass
 
@@ -451,6 +459,27 @@ def telemetry():
     """Returns real-time telemetry JSON."""
     with telemetry_lock:
         return jsonify(latest_telemetry)
+
+@app.route('/api/mqtt-config')
+def mqtt_config():
+    """Exposes MQTT broker configurations dynamically."""
+    if HAS_MQTT:
+        return jsonify({
+            "broker": mqtt_client.BROKER,
+            "port": mqtt_client.PORT,
+            "topic": mqtt_client.TOPIC,
+            "status_topic": mqtt_client.STATUS_TOPIC,
+            "alerts_topic": mqtt_client.ALERTS_TOPIC
+        })
+    else:
+        return jsonify({
+            "broker": "broker.emqx.io",
+            "port": 8083,
+            "topic": "iot/navigation",
+            "status_topic": "iot/navigation/status",
+            "alerts_topic": "iot/navigation/alerts"
+        })
+
 
 @app.route('/speak')
 def speak():

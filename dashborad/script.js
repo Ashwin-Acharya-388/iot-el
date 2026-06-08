@@ -158,3 +158,113 @@ const cameraImg = document.getElementById('camera-feed');
 if (cameraImg) {
   cameraImg.src = '/video';
 }
+
+// ──────────────────────────────────────────────
+// MQTT SAFETY ALERT SYSTEM
+// ──────────────────────────────────────────────
+
+function showDangerToast(reason) {
+  const existing = document.getElementById('danger-toast');
+  if (existing) existing.remove();
+
+  const toast = document.createElement('div');
+  toast.id = 'danger-toast';
+  toast.innerHTML = `
+    <div class="danger-toast-content">
+      <span class="warning-icon">⚠️</span>
+      <div class="danger-toast-text">
+        <strong>SAFETY CRITICAL ALERT:</strong>
+        <p>${reason}</p>
+      </div>
+      <button onclick="document.getElementById('danger-toast').remove()">DISMISS</button>
+    </div>
+  `;
+  document.body.appendChild(toast);
+}
+
+function triggerDangerAlert(payload) {
+  // 1. Flash screen red (visual warning)
+  const container = document.querySelector('.container');
+  if (container) {
+    container.classList.add('flash-danger');
+    setTimeout(() => container.classList.remove('flash-danger'), 3000);
+  }
+
+  // 2. Display the floating warning toast
+  showDangerToast(payload.reason);
+
+  // 3. Log alert in the caretaker alerts table
+  const alertsBody = document.getElementById('alerts-body');
+  if (alertsBody) {
+    const tr = document.createElement('tr');
+    tr.style.backgroundColor = 'rgba(255, 49, 49, 0.15)';
+    tr.style.border = '1px solid #ff3131';
+
+    const tdTime = document.createElement('td');
+    const now = new Date(payload.timestamp || new Date());
+    tdTime.innerText = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    tr.appendChild(tdTime);
+
+    const tdLabel = document.createElement('td');
+    tdLabel.innerHTML = '🚨 <span style="color:#ff3131; font-weight:bold; text-shadow:0 0 10px #ff3131;">DANGER</span>';
+    tr.appendChild(tdLabel);
+
+    const tdDist = document.createElement('td');
+    tdDist.innerText = 'STUCK';
+    tdDist.style.color = '#ff3131';
+    tdDist.style.fontWeight = 'bold';
+    tr.appendChild(tdDist);
+
+    alertsBody.insertBefore(tr, alertsBody.firstChild);
+    while (alertsBody.children.length > 5) {
+      alertsBody.removeChild(alertsBody.lastChild);
+    }
+  }
+}
+
+async function initMQTT() {
+  try {
+    const res = await fetch('/api/mqtt-config');
+    if (!res.ok) return;
+    const mqttConfig = await res.json();
+    
+    console.log("[MQTT] Initializing connection to:", mqttConfig.broker, mqttConfig.port);
+    const clientId = "caretaker_dash_" + Math.random().toString(16).substr(2, 8);
+    const client = new Paho.MQTT.Client(mqttConfig.broker, Number(mqttConfig.port), "/mqtt", clientId);
+
+    client.onConnectionLost = (responseObject) => {
+      console.warn("[MQTT] Connection lost:", responseObject.errorMessage);
+      setTimeout(initMQTT, 5000);
+    };
+
+    client.onMessageArrived = (message) => {
+      try {
+        const payload = JSON.parse(message.payloadString);
+        if (payload.status === "DANGER") {
+          console.log("[MQTT] Danger alert received:", payload);
+          triggerDangerAlert(payload);
+        }
+      } catch (e) {
+        console.error("[MQTT] Error parsing message:", e);
+      }
+    };
+
+    const isSecurePort = Number(mqttConfig.port) === 8084;
+    client.connect({
+      onSuccess: () => {
+        console.log("[MQTT] Connected! Subscribing to:", mqttConfig.alerts_topic);
+        client.subscribe(mqttConfig.alerts_topic);
+      },
+      onFailure: (err) => {
+        console.error("[MQTT] Connection failed:", err);
+        setTimeout(initMQTT, 5000);
+      },
+      useSSL: window.location.protocol === 'https:' || isSecurePort
+    });
+  } catch (err) {
+    console.warn("[MQTT] Setup failed:", err);
+  }
+}
+
+// Start MQTT listener
+initMQTT();

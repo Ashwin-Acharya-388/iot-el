@@ -312,3 +312,97 @@ body{
   }
 
 }
+
+/* ──────────────────────────────────────────────
+   MQTT SAFETY ALERT WARNINGS
+   ────────────────────────────────────────────── */
+
+#danger-toast {
+  position: fixed;
+  top: 25px;
+  left: 55%;
+  transform: translateX(-50%);
+  width: 90%;
+  max-width: 650px;
+  background: rgba(22, 3, 3, 0.96);
+  border: 2px solid #ff3131;
+  border-radius: 12px;
+  box-shadow: 0 0 25px rgba(255, 49, 49, 0.75);
+  z-index: 99999;
+  animation: slideDown 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275), pulseAlert 1.5s infinite alternate;
+}
+
+.danger-toast-content {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding: 16px 20px;
+  color: white;
+}
+
+.warning-icon {
+  font-size: 28px;
+  animation: blinkIcon 0.8s infinite alternate;
+}
+
+.danger-toast-text {
+  flex: 1;
+}
+
+.danger-toast-text strong {
+  color: #ff3131;
+  font-size: 15px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.danger-toast-text p {
+  margin-top: 4px;
+  font-size: 13px;
+  color: #ffb3b3;
+  line-height: 1.4;
+}
+
+.danger-toast-content button {
+  background: #ff3131;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-weight: bold;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 0 10px rgba(255, 49, 49, 0.4);
+}
+
+.danger-toast-content button:hover {
+  background: #e62222;
+  box-shadow: 0 0 15px rgba(255, 49, 49, 0.7);
+  transform: scale(1.05);
+}
+
+@keyframes slideDown {
+  from { top: -120px; opacity: 0; }
+  to { top: 25px; opacity: 1; }
+}
+
+@keyframes pulseAlert {
+  0% { box-shadow: 0 0 15px rgba(255, 49, 49, 0.5); border-color: #ff3131; }
+  100% { box-shadow: 0 0 35px rgba(255, 49, 49, 0.95); border-color: #ff6666; }
+}
+
+@keyframes blinkIcon {
+  0% { opacity: 0.4; transform: scale(0.95); }
+  100% { opacity: 1; transform: scale(1.15); }
+}
+
+/* Flashing Danger Background */
+.flash-danger {
+  animation: flashRed 1s ease-in-out infinite alternate;
+}
+
+@keyframes flashRed {
+  0% { background: radial-gradient(circle at center, #041425 0%, #01040a 80%); }
+  100% { background: radial-gradient(circle at center, #260505 0%, #01040a 80%); }
+}

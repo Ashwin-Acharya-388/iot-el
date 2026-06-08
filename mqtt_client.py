@@ -12,6 +12,8 @@ with open("config/settings.yaml", "r") as file:
 BROKER = config["mqtt"]["broker"]
 PORT = config["mqtt"]["port"]
 TOPIC = config["mqtt"]["topic"]
+STATUS_TOPIC = config["mqtt"].get("status_topic", "iot/navigation/status")
+ALERTS_TOPIC = config["mqtt"].get("alerts_topic", "iot/navigation/alerts")
 
 print("Connecting to broker...")
 
@@ -30,7 +32,6 @@ client.connect(BROKER, PORT, 60)
 print("Connected successfully!")
 
 def publish_navigation(direction, obstacles, fps):
-
     data = {
         "timestamp": str(datetime.now()),
         "direction": direction,
@@ -38,12 +39,18 @@ def publish_navigation(direction, obstacles, fps):
         "obstacle_count": len(obstacles),
         "fps": fps
     }
-
     message = json.dumps(data)
-
     client.publish(TOPIC, message)
+    print("Published Navigation:", message)
 
-    print("Published:", message)
+def publish_status(direction):
+    data = {
+        "timestamp": str(datetime.now()),
+        "direction": direction
+    }
+    message = json.dumps(data)
+    client.publish(STATUS_TOPIC, message)
+    print("Published Status:", message)
 
 if __name__ == "__main__":
 
