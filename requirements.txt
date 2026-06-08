@@ -9,6 +9,9 @@
 #   (piwheels has pre-built ARM wheels for numpy, opencv, etc.)
 # ──────────────────────────────────────────────────────────────
 
+# ── Web dashboard / streaming ─────────────────────────────────
+Flask>=3.0.0               # Dashboard and live video endpoints
+
 # ── YOLO and Computer Vision ──────────────────────────────────
 ultralytics>=8.2.0         # YOLOv8: training, export, validation
 opencv-python-headless>=4.8.0  # Use headless on RPi (no GUI dependency)

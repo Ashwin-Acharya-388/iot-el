@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RPI_HOST="${1:-pi@raspberrypi.local}"
-TARGET_DIR="/home/pi/iot-el"
+RPI_HOST="${1:-jatayu@jatayu.local}"
+TARGET_DIR="/home/jatayu/freespace_navigation"
+CAMERA_INDEX="${CAMERA_INDEX:-0}"
+CAMERA_DEVICE="${CAMERA_DEVICE:-}"
 
 echo "Deploying project to ${RPI_HOST}:${TARGET_DIR}"
 rsync -av --delete \
@@ -12,4 +14,4 @@ rsync -av --delete \
   --exclude 'audio/*.wav' \
   . "${RPI_HOST}:${TARGET_DIR}/"
 
-ssh "${RPI_HOST}" "cd ${TARGET_DIR} && python3 -m pip install --user -r requirements.txt && python3 stream_server.py"
+ssh "${RPI_HOST}" "cd ${TARGET_DIR} && ./venv/bin/python -m pip install -r requirements.txt && CAMERA_INDEX='${CAMERA_INDEX}' CAMERA_DEVICE='${CAMERA_DEVICE}' ./venv/bin/python stream_server.py"
