@@ -1,5 +1,6 @@
 import json
 import yaml
+# pyrefly: ignore [missing-import]
 import paho.mqtt.client as mqtt
 from datetime import datetime
 
