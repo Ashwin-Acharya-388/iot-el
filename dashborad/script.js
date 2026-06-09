@@ -31,9 +31,9 @@ function setStatus(isActive) {
 
 function formatCommand(data) {
   let currentCommand = data.direction || 'FORWARD';
-  if (data.obstacles && data.obstacles.length > 0) {
-    const closest = data.obstacles.reduce((prev, curr) => (prev.distance < curr.distance ? prev : curr));
-    currentCommand = `${data.direction || 'FORWARD'} • ${closest.label || 'Obstacle'} ${closest.distance}m`;
+  const count = data.obstacle_count || 0;
+  if (count > 0) {
+    currentCommand = `Object detected. Count of objects: ${count}.`;
   }
   return currentCommand;
 }

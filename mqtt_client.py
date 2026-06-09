@@ -15,7 +15,9 @@ TOPIC = config["mqtt"]["topic"]
 STATUS_TOPIC = config["mqtt"].get("status_topic", "iot/navigation/status")
 ALERTS_TOPIC = config["mqtt"].get("alerts_topic", "iot/navigation/alerts")
 
-print("Connecting to broker...")
+import threading
+
+print("Connecting to broker in background...")
 
 # WebSocket MQTT client
 client = mqtt.Client(
@@ -26,10 +28,20 @@ client = mqtt.Client(
 # WebSocket path
 client.ws_set_options(path="/mqtt")
 
-# Connect
-client.connect(BROKER, PORT, 60)
+is_connected = False
 
-print("Connected successfully!")
+def _connect_bg():
+    global is_connected
+    try:
+        client.connect(BROKER, PORT, 60)
+        is_connected = True
+        client.loop_start()
+        print("Connected successfully in background!")
+    except Exception as e:
+        print(f"[MQTT] Connection failed: {e}")
+
+# Start connecting in background
+threading.Thread(target=_connect_bg, daemon=True).start()
 
 def publish_navigation(direction, obstacles, fps):
     data = {

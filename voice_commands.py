@@ -24,6 +24,7 @@ Usage:
 """
 
 import os
+import sys
 import time
 import shutil
 import threading
@@ -31,6 +32,7 @@ import queue
 import tempfile
 from pathlib import Path
 from typing import Optional
+
 
 
 # ──────────────────────────────────────────────
@@ -159,7 +161,7 @@ class VoiceCommands:
         # Detect backend
         self._audio_files   = {}
         self._pygame_ready  = False
-        self._pyttsx3_engine= None
+        self._pyttsx3_available = False
         self._fallback_print= False
 
         self._setup_backend()
@@ -187,33 +189,27 @@ class VoiceCommands:
             else:
                 self._pygame_ready = True
                 print("  ✓ Audio backend: pygame (pre-recorded WAV/MP3)")
-                return
 
-        # 3. Try pyttsx3 for real-time TTS
-        engine = _try_import_pyttsx3()
-        if engine:
-            engine.setProperty("rate",   VOICE_RATE)
-            engine.setProperty("volume", VOICE_VOLUME)
-            # Try to select a clear voice
-            voices = engine.getProperty("voices")
-            for v in voices:
-                if "english" in v.name.lower() or "en" in v.id.lower():
-                    engine.setProperty("voice", v.id)
-                    break
-            self._pyttsx3_engine = engine
-            print("  ✓ Audio backend: pyttsx3 (real-time TTS)")
-            return
+        # 3. Check pyttsx3 availability without holding main thread COM engine
+        try:
+            import pyttsx3
+            test_engine = pyttsx3.init()
+            del test_engine
+            self._pyttsx3_available = True
+            print("  ✓ Audio backend: pyttsx3 (real-time TTS) detected as fallback")
+        except Exception as e:
+            print(f"  [WARN] Failed to detect pyttsx3: {e}")
 
-        # 4. Try espeak directly as subprocess
-        if shutil.which("espeak"):
-            print("  ✓ Audio backend: espeak (subprocess)")
+        # 4. Try espeak directly as subprocess if no pyttsx3
+        if not self._pyttsx3_available and shutil.which("espeak"):
+            print("  ✓ Audio backend: espeak (subprocess) initialized as fallback")
             self._espeak = True
-            return
 
         # 5. Print-only fallback
-        print("  [WARN] No audio backend found. Install pyttsx3 or espeak.")
-        print("         Commands will be printed to console only.")
-        self._fallback_print = True
+        if not self._pygame_ready and not self._pyttsx3_available and not hasattr(self, "_espeak"):
+            print("  [WARN] No audio backend found. Install pyttsx3 or espeak.")
+            print("         Commands will be printed to console only.")
+            self._fallback_print = True
 
     def speak(self, command: str):
         """
@@ -256,15 +252,53 @@ class VoiceCommands:
 
     def _playback_loop(self):
         """Background thread: dequeue and play commands."""
+        is_windows = sys.platform.startswith('win')
+        if is_windows:
+            try:
+                import pythoncom
+                pythoncom.CoInitialize()
+            except Exception as e:
+                print(f"  [WARN] CoInitialize failed on playback thread: {e}")
+
+        pyttsx3_engine = None
+        if self._pyttsx3_available:
+            try:
+                import pyttsx3
+                pyttsx3_engine = pyttsx3.init()
+                pyttsx3_engine.setProperty("rate",   VOICE_RATE)
+                pyttsx3_engine.setProperty("volume", VOICE_VOLUME)
+                # Try to select a clear voice
+                voices = pyttsx3_engine.getProperty("voices")
+                for v in voices:
+                    if "english" in v.name.lower() or "en" in v.id.lower():
+                        pyttsx3_engine.setProperty("voice", v.id)
+                        break
+            except Exception as e:
+                print(f"  [WARN] Failed to initialize pyttsx3 on background thread: {e}")
+
         while not self._shutdown_flag.is_set():
             try:
                 cmd = self._queue.get(timeout=0.5)
             except queue.Empty:
                 continue
 
-            self._play(cmd)
+            self._play(cmd, pyttsx3_engine)
 
-    def _play(self, command: str):
+        if pyttsx3_engine is not None:
+            try:
+                pyttsx3_engine.stop()
+            except Exception:
+                pass
+            del pyttsx3_engine
+
+        if is_windows:
+            try:
+                import pythoncom
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
+    def _play(self, command: str, pyttsx3_engine=None):
         """Play a single command using the best available backend."""
         if self._fallback_print:
             print(f"\n  🔊 DIRECTION: {command}")
@@ -283,10 +317,10 @@ class VoiceCommands:
                 print(f"  [WARN] pygame play failed: {e}")
 
         # pyttsx3: real-time TTS
-        if self._pyttsx3_engine:
+        if pyttsx3_engine:
             try:
-                self._pyttsx3_engine.say(command)
-                self._pyttsx3_engine.runAndWait()
+                pyttsx3_engine.say(command)
+                pyttsx3_engine.runAndWait()
                 return
             except Exception as e:
                 print(f"  [WARN] pyttsx3 failed: {e}")
@@ -306,11 +340,6 @@ class VoiceCommands:
         """Stop the playback thread cleanly."""
         self._shutdown_flag.set()
         self._thread.join(timeout=2.0)
-        if self._pyttsx3_engine:
-            try:
-                self._pyttsx3_engine.stop()
-            except Exception:
-                pass
         if self._pygame_ready:
             try:
                 import pygame

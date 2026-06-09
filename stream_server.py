@@ -73,15 +73,38 @@ shutdown_event = threading.Event()
 
 def open_camera():
     candidates = []
-    if CAMERA_DEVICE:
-        candidates.append(CAMERA_DEVICE)
+    # 1. Try environment variables first
+    cam_dev = os.getenv('CAMERA_DEVICE', '').strip()
+    if cam_dev:
+        candidates.append(cam_dev)
+    
+    # 2. Check for USB camera on Linux (/dev/v4l/by-id/)
+    try:
+        v4l_usb_devices = glob.glob('/dev/v4l/by-id/*usb*')
+        for dev_path in sorted(v4l_usb_devices):
+            try:
+                real_path = os.path.realpath(dev_path)
+                if real_path not in candidates:
+                    candidates.append(real_path)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
+    # 3. Add existing Linux video devices
     existing_video_devices = sorted(glob.glob('/dev/video*'))
-    candidates.extend(existing_video_devices)
+    for dev in existing_video_devices:
+        if dev not in candidates:
+            candidates.append(dev)
 
-    candidates.extend([str(i) for i in range(0, 10)])
-    candidates.append(CAMERA_INDEX)
-    candidates.append(0)
+    # 4. Try higher indices (USB webcams) before index 0
+    cam_idx = os.getenv('CAMERA_INDEX', '')
+    if cam_idx.isdigit():
+        candidates.append(int(cam_idx))
+    
+    for i in [1, 2, 3, 0, 4, 5]:
+        if i not in candidates:
+            candidates.append(i)
 
     backend_order = []
     for name in ('CAP_DSHOW', 'CAP_MSMF', 'CAP_V4L2'):
@@ -141,9 +164,7 @@ def detect_obstacles_canny(frame):
         cx = (x + box_w / 2) / max(1, w)
         cy = (y + box_h / 2) / max(1, h)
         distance = max(0.4, min(8.0, 1.2 + 140.0 / (box_h + 1e-6)))
-        label = "Person" if box_h > 60 else "Obstacle"
-        if box_w > 90 or box_h > 90:
-            label = "Vehicle"
+        label = "Object"
 
         obstacles.append({
             "label": label,
@@ -258,7 +279,7 @@ def run_navigation_loop():
                     conf = det[4]
                     cls = int(det[5])
                     dist = estimate_distance(det)
-                    label = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else "obstacle"
+                    label = "Object"
                     
                     box_w = x2 - x1
                     box_h = y2 - y1
@@ -309,13 +330,13 @@ def run_navigation_loop():
 
                 obstacles = [
                     {
-                        "label": "Person",
+                        "label": "Object",
                         "distance": round(float(dist1), 1),
                         "x": x1_min, "y": y1_min, "w": (x1_max - x1_min), "h": (y1_max - y1_min),
                         "center_x": round(float(cx1), 2), "center_y": round(float(cy1), 2)
                     },
                     {
-                        "label": "Vehicle",
+                        "label": "Object",
                         "distance": round(float(dist2), 1),
                         "x": x2_min, "y": y2_min, "w": (x2_max - x2_min), "h": (y2_max - y2_min),
                         "center_x": round(float(cx2), 2), "center_y": round(float(cy2), 2)
@@ -394,8 +415,8 @@ def run_navigation_loop():
             })
 
         # Voice alerting logic
-        if voice is not None and len(obstacles) > 0 and obstacles[0]['distance'] < 3.5:
-            alert_text = f"{obstacles[0]['label']}, {obstacles[0]['distance']} meters ahead"
+        if voice is not None and obstacle_count > 0 and obstacles[0]['distance'] < 3.5:
+            alert_text = f"Object detected. Count of objects: {obstacle_count}."
             voice.speak(alert_text)
 
         # MQTT telemetry logging

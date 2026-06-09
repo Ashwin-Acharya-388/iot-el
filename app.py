@@ -1,6 +1,13 @@
 import glob
 import os
 import sys
+import io
+
+# Reconfigure stdout/stderr encoding on Windows to support Unicode characters
+if sys.platform.startswith('win'):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 import threading
 import time
 import base64
@@ -25,19 +32,16 @@ except Exception as e:
     VoiceCommands = None
 
 try:
-    from navigation_system_rpi import (
-        ONNXInference,
-        SimpleTracker,
-        TemporalSmoother,
+    from navigation_freespace_rpi import (
+        FreespaceInference,
+        MaskSmoother,
         DirectionVoter,
-        find_safe_direction,
-        estimate_distance,
-        CLASS_NAMES,
+        mask_to_direction,
     )
-    HAS_YOLO_LIBS = True
+    HAS_FREESPACE = True
 except Exception as e:
-    print(f"[YOLO] Could not import navigation_system_rpi: {e}")
-    HAS_YOLO_LIBS = False
+    print(f"[MODEL] Could not import navigation_freespace_rpi: {e}")
+    HAS_FREESPACE = False
 
 try:
     import mqtt_client
@@ -106,18 +110,38 @@ shutdown_event = threading.Event()
 
 def open_camera():
     candidates = []
-    # Try environment variables first
+    # 1. Try environment variables first
     cam_dev = os.getenv('CAMERA_DEVICE', '').strip()
     if cam_dev:
         candidates.append(cam_dev)
     
-    existing_video_devices = sorted(glob.glob('/dev/video*'))
-    candidates.extend(existing_video_devices)
+    # 2. Check for USB camera on Linux (/dev/v4l/by-id/)
+    try:
+        v4l_usb_devices = glob.glob('/dev/v4l/by-id/*usb*')
+        for dev_path in sorted(v4l_usb_devices):
+            try:
+                real_path = os.path.realpath(dev_path)
+                if real_path not in candidates:
+                    candidates.append(real_path)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
-    cam_idx = int(os.getenv('CAMERA_INDEX', '0'))
-    candidates.extend([str(i) for i in range(0, 10)])
-    candidates.append(cam_idx)
-    candidates.append(0)
+    # 3. Add existing Linux video devices
+    existing_video_devices = sorted(glob.glob('/dev/video*'))
+    for dev in existing_video_devices:
+        if dev not in candidates:
+            candidates.append(dev)
+
+    # 4. Try higher indices (USB webcams) before index 0
+    cam_idx = os.getenv('CAMERA_INDEX', '')
+    if cam_idx.isdigit():
+        candidates.append(int(cam_idx))
+    
+    for i in [1, 2, 3, 0, 4, 5]:
+        if i not in candidates:
+            candidates.append(i)
 
     backend_order = []
     for name in ('CAP_DSHOW', 'CAP_MSMF', 'CAP_V4L2'):
@@ -177,9 +201,7 @@ def detect_obstacles_canny(frame):
         cx = (x + box_w / 2) / max(1, w)
         cy = (y + box_h / 2) / max(1, h)
         distance = max(0.4, min(8.0, 1.2 + 140.0 / (box_h + 1e-6)))
-        label = "Person" if box_h > 60 else "Obstacle"
-        if box_w > 90 or box_h > 90:
-            label = "Vehicle"
+        label = "Object"
 
         obstacles.append({
             "label": label,
@@ -209,6 +231,31 @@ def detect_obstacles_canny(frame):
 
     return direction, obstacles, len(obstacles)
 
+def make_synthetic_frame(t):
+    """Generates a synthetic street scene to feed the ONNX model when camera is simulated."""
+    frame = np.zeros((320, 320, 3), dtype=np.uint8)
+    # Sky: light blue
+    frame[:160, :] = [200, 150, 100]
+    # Ground: dark gray
+    frame[160:, :] = [80, 80, 80]
+    
+    # Perspective road polygon
+    road_pts = np.array([[110, 160], [210, 160], [300, 320], [20, 320]], dtype=np.int32)
+    cv2.fillPoly(frame, [road_pts], [120, 120, 120])
+    
+    # Simulated moving obstacle (e.g., a moving person)
+    cx = int(160 + 70 * np.sin(t))
+    cy = int(220 + 15 * np.cos(t * 0.7))
+    cv2.rectangle(frame, (cx - 15, cy - 35), (cx + 15, cy + 10), [50, 50, 200], -1) # Red-ish obstacle
+    
+    # Simulated static obstacle (e.g., roadside post)
+    cv2.rectangle(frame, (50, 160), (70, 230), [50, 150, 50], -1) # Green-ish post
+    
+    # Add minor noise
+    noise = np.random.normal(0, 3, frame.shape).astype(np.int16)
+    frame = np.clip(frame.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+    return frame
+
 def run_navigation_loop():
     global latest_jpeg_frame, latest_telemetry
     print("\n[BACKEND] Starting Navigation and Video Stream Loop...")
@@ -224,22 +271,23 @@ def run_navigation_loop():
     smoother = None
     voter = None
 
-    if HAS_YOLO_LIBS:
-        model_path = Path(__file__).parent / "models" / "yolov8n_qat.onnx"
+    if HAS_FREESPACE:
+        model_path = Path(__file__).parent / "models" / "freespace_int8.onnx"
+        if not model_path.exists():
+            model_path = Path(__file__).parent / "freespace_int8.onnx"
         if model_path.exists():
             try:
-                engine = ONNXInference(model_path)
-                tracker = SimpleTracker(max_age=5, min_hits=2)
-                smoother = TemporalSmoother(window=3)
+                engine = FreespaceInference(model_path)
+                smoother = MaskSmoother(window=3)
                 voter = DirectionVoter(window=5)
                 model_active = True
-                print("[BACKEND] ✓ ONNX Model loaded successfully.")
+                print("[BACKEND] ✓ Free-space ONNX model loaded successfully.")
             except Exception as e:
-                print(f"[BACKEND] ⚠ Failed to load ONNX model: {e}. Running in Canny edge mode.")
+                print(f"[BACKEND] ⚠ Failed to load free-space model: {e}. Running in Canny edge mode.")
         else:
             print(f"[BACKEND] ⚠ Model not found at {model_path}. Running in Canny edge mode.")
     else:
-        print("[BACKEND] ⚠ YOLO libraries not imported. Running in Canny edge mode.")
+        print("[BACKEND] ⚠ Free-space model libs not imported. Running in Canny edge mode.")
 
     # Simulation variables in case camera fails
     sim_t = 0.0
@@ -264,62 +312,86 @@ def run_navigation_loop():
                 print("[BACKEND] ⚠ Camera read failed. Releasing camera.")
                 camera_active = False
                 cap.release()
-
+                
         # If camera is offline, fallback to simulation mode
         is_simulated = not camera_active
         if is_simulated:
-            frame = blank_hud.copy()
+            if model_active:
+                sim_t += 0.05
+                frame = make_synthetic_frame(sim_t)
+            else:
+                frame = blank_hud.copy()
 
         # Run detection
         direction = "FORWARD"
         obstacles = []
         obstacle_count = 0
+        smoothed_mask = None
 
-        # Case A: Real Camera + Real YOLO model
-        if not is_simulated and model_active and engine is not None:
+        # Case A: Free-space segmentation model is active (runs on real or synthetic frames)
+        if model_active and engine is not None:
             try:
-                # Preprocess (resizes to 320x320 internally)
                 tensor = engine.preprocess(frame)
-                output = engine.infer(tensor)
-                dets = engine.postprocess(output, conf_thresh=0.45)
-                
-                tracked = tracker.update(dets)
-                smoothed = smoother.update(tracked)
-                
-                raw_direction, closest_obs = find_safe_direction(smoothed)
+                mask = engine.infer(tensor)
+                smoothed_mask = smoother.update(mask)
+                raw_direction, zone_info = mask_to_direction(smoothed_mask)
                 direction = voter.vote(raw_direction).upper()
                 
-                for det in smoothed:
-                    x1, y1, x2, y2 = int(det[0]), int(det[1]), int(det[2]), int(det[3])
-                    conf = det[4]
-                    cls = int(det[5])
-                    dist = estimate_distance(det)
-                    label = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else "obstacle"
+                walkable_pct = float(zone_info.get('total_free', 0.0)) * 100.0
+                
+                # Detect contours from the non-walkable regions to identify obstacles
+                obs_mask = (smoothed_mask == 0).astype(np.uint8) * 255
+                obs_mask_bottom = np.zeros_like(obs_mask)
+                obs_mask_bottom[160:, :] = obs_mask[160:, :]
+                
+                contours, _ = cv2.findContours(obs_mask_bottom, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for contour in contours:
+                    area = cv2.contourArea(contour)
+                    if area < 500:
+                        continue
+                    x, y, box_w, box_h = cv2.boundingRect(contour)
+                    if box_h < 15 or box_w < 15:
+                        continue
                     
-                    box_w = x2 - x1
-                    box_h = y2 - y1
-                    cx = (x1 + box_w / 2) / 320.0
-                    cy = (y1 + box_h / 2) / 320.0
+                    cx = (x + box_w / 2) / 320.0
+                    cy = (y + box_h / 2) / 320.0
+                    distance = max(0.4, min(8.0, 1.2 + 140.0 / (box_h + 1e-6)))
                     
+                    label = "Object"
+                        
                     obstacles.append({
-                        "label": label.capitalize(),
-                        "distance": round(float(dist), 1),
-                        "x": x1,
-                        "y": y1,
-                        "w": box_w,
-                        "h": box_h,
+                        "label": label,
+                        "distance": round(float(distance), 1),
+                        "x": int(x),
+                        "y": int(y),
+                        "w": int(box_w),
+                        "h": int(box_h),
                         "center_x": round(float(cx), 2),
                         "center_y": round(float(cy), 2),
-                        "conf": round(float(conf), 2)
                     })
+                
                 obstacles = sorted(obstacles, key=lambda item: item['distance'])
                 obstacle_count = len(obstacles)
+                
+                # Fallback list if no obstacles are found in the mask
+                if not obstacles:
+                    obstacles = [
+                        {
+                            "label": "Walkable",
+                            "distance": round(max(0.0, 100.0 - walkable_pct) / 10.0, 1),
+                            "x": 0, "y": 0, "w": 0, "h": 0,
+                            "center_x": 0.5, "center_y": 0.5,
+                            "conf": round(walkable_pct / 100.0, 2)
+                        }
+                    ]
+                
+                if voice is not None and direction != "FORWARD":
+                    voice.speak(direction)
             except Exception as ex:
-                print(f"[BACKEND] YOLO inference error: {ex}")
-                # Fallback to Canny
+                print(f"[BACKEND] Free-space inference error: {ex}")
                 direction, obstacles, obstacle_count = detect_obstacles_canny(frame)
         else:
-            # Case B: Camera online but no YOLO, or Simulation mode
+            # Case B: Canny Edge / Simulation mode (when model is inactive)
             if is_simulated:
                 # Generate simulated moving obstacles on HUD
                 sim_t += 0.05
@@ -345,13 +417,13 @@ def run_navigation_loop():
 
                 obstacles = [
                     {
-                        "label": "Person",
+                        "label": "Object",
                         "distance": round(float(dist1), 1),
                         "x": x1_min, "y": y1_min, "w": (x1_max - x1_min), "h": (y1_max - y1_min),
                         "center_x": round(float(cx1), 2), "center_y": round(float(cy1), 2)
                     },
                     {
-                        "label": "Vehicle",
+                        "label": "Object",
                         "distance": round(float(dist2), 1),
                         "x": x2_min, "y": y2_min, "w": (x2_max - x2_min), "h": (y2_max - y2_min),
                         "center_x": round(float(cx2), 2), "center_y": round(float(cy2), 2)
@@ -380,12 +452,26 @@ def run_navigation_loop():
         if vis.shape[0] != 320 or vis.shape[1] != 320:
             vis = cv2.resize(vis, (320, 320))
 
+        # Apply model-based green/red overlays
+        if model_active and smoothed_mask is not None:
+            mask_resized = cv2.resize(smoothed_mask, (320, 320), interpolation=cv2.INTER_NEAREST)
+            walkable = mask_resized > 0
+            vis[walkable] = (vis[walkable] * 0.6 + np.array([0, 220, 0], dtype=np.uint8) * 0.4).astype(np.uint8)
+            
+            non_walkable = ~walkable
+            bottom_half_mask = np.zeros((320, 320), dtype=bool)
+            bottom_half_mask[160:, :] = True
+            nw_bottom = non_walkable & bottom_half_mask
+            vis[nw_bottom] = (vis[nw_bottom] * 0.8 + np.array([0, 0, 180], dtype=np.uint8) * 0.2).astype(np.uint8)
+
         # Draw Left, Center, Right zone dividers on HUD
         cv2.line(vis, (int(320 * 0.33), 0), (int(320 * 0.33), 320), (50, 50, 100), 1)
         cv2.line(vis, (int(320 * 0.67), 0), (int(320 * 0.67), 320), (50, 50, 100), 1)
 
         for obs in obstacles:
             x, y, w, h = obs['x'], obs['y'], obs['w'], obs['h']
+            if w == 0 or h == 0:
+                continue
             lbl = obs['label']
             dst = obs['distance']
             if dst < 2.0:
@@ -424,14 +510,14 @@ def run_navigation_loop():
                 "obstacles": obstacles[:5],
                 "status": {
                     "camera": "Connected" if camera_active else "Simulated",
-                    "model": "YOLOv8 QAT" if (model_active and not is_simulated) else ("Canny Edge" if not is_simulated else "Simulated"),
+                    "model": "Free-space ONNX" if model_active else ("Canny Edge" if not is_simulated else "Simulated"),
                     "server": "Active"
                 }
             })
 
         # Voice alerting logic
-        if voice is not None and len(obstacles) > 0 and obstacles[0]['distance'] < 3.5:
-            alert_text = f"{obstacles[0]['label']}, {obstacles[0]['distance']} meters ahead"
+        if voice is not None and obstacle_count > 0 and obstacles[0]['distance'] < 3.5:
+            alert_text = f"Object detected. Count of objects: {obstacle_count}."
             voice.speak(alert_text)
 
         # MQTT telemetry logging

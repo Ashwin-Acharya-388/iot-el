@@ -253,10 +253,10 @@ def test_distance_estimation(suite: TestSuite):
             return False, f"dist_close={dist_close:.1f}m out of range"
         if not (0.3 <= dist_far <= 20.0):
             return False, f"dist_far={dist_far:.1f}m out of range"
-        if not (dist_close > dist_far):
+        if not (dist_close < dist_far):
             return False, f"distances reversed: {dist_close:.1f}m vs {dist_far:.1f}m"
 
-        return True, f"(close={dist_close:.1f}m > far={dist_far:.1f}m)"
+        return True, f"(close={dist_close:.1f}m < far={dist_far:.1f}m)"
 
     def test_get_closest_obstacle():
         from navigation_system_rpi import get_closest_obstacle
