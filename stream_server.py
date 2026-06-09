@@ -490,15 +490,17 @@ def mqtt_config():
             "port": mqtt_client.PORT,
             "topic": mqtt_client.TOPIC,
             "status_topic": mqtt_client.STATUS_TOPIC,
-            "alerts_topic": mqtt_client.ALERTS_TOPIC
+            "alerts_topic": mqtt_client.ALERTS_TOPIC,
+            "health_topic": mqtt_client.HEALTH_TOPIC
         })
     else:
         return jsonify({
-            "broker": "broker.emqx.io",
+            "broker": "127.0.0.1",
             "port": 8083,
             "topic": "iot/navigation",
             "status_topic": "iot/navigation/status",
-            "alerts_topic": "iot/navigation/alerts"
+            "alerts_topic": "iot/navigation/alerts",
+            "health_topic": "iot/navigation/health"
         })
 
 
@@ -513,6 +515,29 @@ def speak():
         voice.speak(text)
     return "OK", 200
 
+def run_health_loop():
+    import psutil
+    
+    def get_cpu_temp():
+        try:
+            # Standard RPi path
+            with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+                return round(float(f.read().strip()) / 1000.0, 1)
+        except Exception:
+            return 45.0  # Safe test default
+            
+    print("[SERVER] Starting Device Health MQTT Publisher Loop...")
+    while not shutdown_event.is_set():
+        if HAS_MQTT:
+            try:
+                temp = get_cpu_temp()
+                cpu = psutil.cpu_percent()
+                mem = psutil.virtual_memory().percent
+                mqtt_client.publish_health(temp, cpu, mem)
+            except Exception as e:
+                pass
+        time.sleep(3.0)  # Publish every 3 seconds
+
 @atexit.register
 def cleanup():
     shutdown_event.set()
@@ -522,6 +547,10 @@ if __name__ == '__main__':
     nav_thread = threading.Thread(target=run_navigation_loop, daemon=True)
     nav_thread.start()
 
+    # Start the health reporting thread
+    health_thread = threading.Thread(target=run_health_loop, daemon=True)
+    health_thread.start()
+
     print(f"\n[SERVER] Starting dashboard on http://{HOST}:{PORT}")
     try:
         app.run(host=HOST, port=PORT, threaded=True, debug=False, use_reloader=False)
@@ -530,4 +559,5 @@ if __name__ == '__main__':
     finally:
         shutdown_event.set()
         nav_thread.join(timeout=2.0)
+        health_thread.join(timeout=2.0)
         print("[SERVER] Stopped.")

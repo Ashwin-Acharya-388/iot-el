@@ -673,15 +673,17 @@ def mqtt_config():
             "port": mqtt_client.PORT,
             "topic": mqtt_client.TOPIC,
             "status_topic": mqtt_client.STATUS_TOPIC,
-            "alerts_topic": mqtt_client.ALERTS_TOPIC
+            "alerts_topic": mqtt_client.ALERTS_TOPIC,
+            "health_topic": mqtt_client.HEALTH_TOPIC
         })
     else:
         return jsonify({
-            "broker": "broker.emqx.io",
+            "broker": "127.0.0.1",
             "port": 8083,
             "topic": "iot/navigation",
             "status_topic": "iot/navigation/status",
-            "alerts_topic": "iot/navigation/alerts"
+            "alerts_topic": "iot/navigation/alerts",
+            "health_topic": "iot/navigation/health"
         })
 
 
@@ -743,6 +745,10 @@ if __name__ == '__main__':
     nav_thread = threading.Thread(target=run_navigation_loop, daemon=True)
     nav_thread.start()
 
+    # Start the health reporting thread
+    health_thread = threading.Thread(target=run_health_loop, daemon=True)
+    health_thread.start()
+
     print(f"\n[SERVER] Starting dashboard on http://{HOST}:{PORT}")
     try:
         app.run(host=HOST, port=PORT, threaded=True, debug=False, use_reloader=False)
@@ -751,4 +757,5 @@ if __name__ == '__main__':
     finally:
         shutdown_event.set()
         nav_thread.join(timeout=2.0)
+        health_thread.join(timeout=2.0)
         print("[SERVER] Stopped.")

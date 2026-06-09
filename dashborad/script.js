@@ -377,6 +377,25 @@ async function initMQTT() {
           console.log('[MQTT] Danger alert received:', payload);
           triggerDangerAlert(payload);
         }
+
+        if (message.destinationName === (mqttConfig.health_topic || "iot/navigation/health")) {
+          const tempEl = document.getElementById('health-temp');
+          const cpuEl = document.getElementById('health-cpu');
+          const memEl = document.getElementById('health-mem');
+          
+          if (tempEl) {
+            tempEl.innerText = payload.cpu_temp + "°C";
+            tempEl.style.color = payload.cpu_temp > 75 ? "#ff3131" : (payload.cpu_temp > 60 ? "#ffaa35" : "#35ff4f");
+          }
+          if (cpuEl) {
+            cpuEl.innerText = payload.cpu_usage + "%";
+            cpuEl.style.color = payload.cpu_usage > 85 ? "#ff3131" : (payload.cpu_usage > 60 ? "#ffaa35" : "#35ff4f");
+          }
+          if (memEl) {
+            memEl.innerText = payload.memory_usage + "%";
+            memEl.style.color = payload.memory_usage > 85 ? "#ff3131" : (payload.memory_usage > 65 ? "#ffaa35" : "#35ff4f");
+          }
+        }
       } catch (e) {
         console.error('[MQTT] Error parsing message:', e);
       }
@@ -387,6 +406,7 @@ async function initMQTT() {
       onSuccess: () => {
         console.log('[MQTT] Connected! Subscribing to:', mqttConfig.alerts_topic);
         client.subscribe(mqttConfig.alerts_topic);
+        client.subscribe(healthTopic);
       },
       onFailure: (err) => {
         console.error('[MQTT] Connection failed:', err);
