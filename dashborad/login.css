@@ -336,3 +336,22 @@ body {
         opacity: 0.3;
     }
 }
+
+/* Sign-up / back-to-login link */
+.signup-link {
+    text-align: center;
+    margin-top: 16px;
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.12em;
+}
+
+.signup-link a {
+    color: var(--neon-cyan);
+    text-decoration: none;
+    transition: text-shadow 0.2s;
+}
+
+.signup-link a:hover {
+    text-shadow: 0 0 8px var(--neon-cyan);
+}

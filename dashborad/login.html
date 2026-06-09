@@ -5,6 +5,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AI Navigation — Login</title>
+    <meta name="description" content="Sign in to the AI Navigation Command Center">
     <link rel="stylesheet" href="login.css">
 </head>
 
@@ -47,9 +48,13 @@
                     <span class="toggle-pw" onclick="togglePassword()" title="Toggle visibility">👁</span>
                 </div>
 
-                <button class="login-btn" type="submit">AUTHENTICATE</button>
+                <button class="login-btn" type="submit" id="login-btn">AUTHENTICATE</button>
 
             </form>
+
+            <div class="signup-link">
+                New user? <a href="/signup">CREATE AN ACCOUNT →</a>
+            </div>
 
             <div class="status-row">
                 <div class="dot"></div>
@@ -64,6 +69,12 @@
         function togglePassword() {
             const pw = document.getElementById('password');
             pw.type = pw.type === 'password' ? 'text' : 'password';
+        }
+
+        // Show error if redirected back after failed login
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('error') === '1') {
+            document.getElementById('error-msg').style.display = 'block';
         }
     </script>
 

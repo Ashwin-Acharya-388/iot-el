@@ -1,27 +1,33 @@
+/* ================================================================
+   AI Navigation Command Center – Dashboard Script
+   ================================================================ */
+
+// ── Clock ─────────────────────────────────────────────────────────
 function updateClock() {
   const now = new Date();
   let hours = now.getHours();
   const minutes = String(now.getMinutes()).padStart(2, '0');
   const seconds = String(now.getSeconds()).padStart(2, '0');
   const ampm = hours >= 12 ? 'PM' : 'AM';
-
-  hours = hours % 12;
-  hours = hours ? hours : 12;
-
+  hours = hours % 12 || 12;
   document.getElementById('time').innerHTML = `${hours}:${minutes}:${seconds} ${ampm}`;
   document.getElementById('date').innerHTML = now.toDateString();
 }
 
+// ── State ─────────────────────────────────────────────────────────
 let alertTracker = new Set();
 let lastSpoken = '';
+let activeLogFilter = 'all';
+let logViewCleared = false;
+let knownLogTimestamps = new Set();
 
+// ── Status helpers ────────────────────────────────────────────────
 function setStatus(isActive) {
   const serverStatus = document.getElementById('status-server');
   if (serverStatus) {
     serverStatus.innerText = isActive ? 'Active' : 'Offline';
     serverStatus.style.color = isActive ? '#35ff4f' : '#ffaa35';
   }
-
   const circle = document.getElementById('status-circle');
   if (circle) {
     circle.style.backgroundColor = isActive ? '#35ff4f' : '#ffaa35';
@@ -29,21 +35,22 @@ function setStatus(isActive) {
   }
 }
 
+// ── Voice command formatting ──────────────────────────────────────
 function formatCommand(data) {
-  let currentCommand = data.direction || 'FORWARD';
   const count = data.obstacle_count || 0;
   if (count > 0) {
-    currentCommand = `Object detected. Count of objects: ${count}.`;
+    return `Obstacle detected. Count of obstacles: ${count}.`;
   }
-  return currentCommand;
+  return data.direction || 'FORWARD';
 }
 
+// ── Dashboard update ──────────────────────────────────────────────
 function updateDashboard(data) {
   const dirElement = document.getElementById('val-direction');
   if (dirElement) dirElement.innerText = data.direction || 'FORWARD';
 
   const fpsElement = document.getElementById('val-fps');
-  if (fpsElement) fpsElement.innerText = data.fps || '18.5';
+  if (fpsElement) fpsElement.innerText = data.fps || '0';
 
   const countElement = document.getElementById('val-obstacle-count');
   if (countElement) countElement.innerText = data.obstacle_count || 0;
@@ -57,11 +64,12 @@ function updateDashboard(data) {
   const modelStatus = document.getElementById('status-model');
   if (modelStatus) {
     modelStatus.innerText = data.status?.model || 'Running';
-    modelStatus.style.color = data.status?.model === 'Running' ? '#35ff4f' : '#ffaa35';
+    modelStatus.style.color = '#35ff4f';
   }
 
   setStatus(true);
 
+  // Voice text panel
   const voiceMain = document.getElementById('voice-main');
   const voiceHistory = document.getElementById('voice-history');
 
@@ -90,6 +98,7 @@ function updateDashboard(data) {
     }
   }
 
+  // Alerts table
   const alertsBody = document.getElementById('alerts-body');
   if (alertsBody && data.obstacles) {
     data.obstacles.forEach((obs) => {
@@ -102,15 +111,17 @@ function updateDashboard(data) {
           const now = new Date();
           const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
           const tr = document.createElement('tr');
+
           const tdTime = document.createElement('td');
           tdTime.innerText = timeStr;
           tr.appendChild(tdTime);
 
           const tdLabel = document.createElement('td');
-          tdLabel.innerText = obs.label;
+          // Always display generic "Obstacle" label
+          tdLabel.innerText = 'Obstacle';
           if (obs.distance < 2.0) {
-            tdLabel.className = 'yellow';
             tdLabel.style.color = '#ff3131';
+            tdLabel.style.fontWeight = 'bold';
           } else if (obs.distance < 3.5) {
             tdLabel.className = 'cyan';
           } else {
@@ -136,6 +147,7 @@ function updateDashboard(data) {
   }
 }
 
+// ── Telemetry polling ─────────────────────────────────────────────
 async function loadTelemetry() {
   try {
     const response = await fetch('/api/telemetry');
@@ -148,21 +160,145 @@ async function loadTelemetry() {
   }
 }
 
-updateClock();
-setInterval(updateClock, 1000);
-loadTelemetry();
-setInterval(loadTelemetry, 1000);
+// ── Activity Log ──────────────────────────────────────────────────
+function setLogFilter(btn, level) {
+  document.querySelectorAll('.log-filter').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  activeLogFilter = level;
+  renderLogEntries(window._lastLogEntries || []);
+}
 
-// Initialize camera stream once on page load
+function clearLogView() {
+  logViewCleared = true;
+  knownLogTimestamps.clear();
+  const tbody = document.getElementById('log-body');
+  if (tbody) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:rgba(0,229,255,0.25); text-align:center; padding:16px; font-size:12px;">Log view cleared. New entries will appear below.</td></tr>';
+  }
+}
+
+function renderLogEntries(entries) {
+  window._lastLogEntries = entries;
+  const tbody = document.getElementById('log-body');
+  if (!tbody) return;
+
+  const filtered = activeLogFilter === 'all'
+    ? entries
+    : entries.filter(e => e.level === activeLogFilter);
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:rgba(0,229,255,0.3); text-align:center; padding:16px; font-size:12px;">No entries for this filter.</td></tr>';
+    return;
+  }
+
+  // Only prepend rows that are genuinely new
+  let addedCount = 0;
+  const fragment = document.createDocumentFragment();
+
+  for (const entry of filtered) {
+    const key = `${entry.timestamp}|${entry.message}`;
+    if (knownLogTimestamps.has(key)) continue;
+    if (logViewCleared) {
+      // After a clear, only show entries added after the clear (approximate)
+      knownLogTimestamps.add(key);
+      continue; // Skip pre-clear entries silently
+    }
+    knownLogTimestamps.add(key);
+
+    const tr = document.createElement('tr');
+    if (entry.level === 'warn')   tr.className = 'log-row-warn';
+    if (entry.level === 'danger') tr.className = 'log-row-danger';
+
+    const tdTs = document.createElement('td');
+    tdTs.innerText = entry.timestamp;
+    tr.appendChild(tdTs);
+
+    const tdType = document.createElement('td');
+    tdType.innerText = entry.type;
+    tr.appendChild(tdType);
+
+    const tdLevel = document.createElement('td');
+    const badge = document.createElement('span');
+    badge.className = `log-badge ${entry.level}`;
+    badge.innerText = entry.level.toUpperCase();
+    tdLevel.appendChild(badge);
+    tr.appendChild(tdLevel);
+
+    const tdMsg = document.createElement('td');
+    tdMsg.innerText = entry.message;
+    tr.appendChild(tdMsg);
+
+    fragment.appendChild(tr);
+    addedCount++;
+  }
+
+  if (addedCount > 0) {
+    // Clear placeholder if present
+    if (tbody.querySelector('td[colspan]') && tbody.children.length === 1) {
+      tbody.innerHTML = '';
+    }
+    tbody.insertBefore(fragment, tbody.firstChild);
+
+    // Limit displayed rows to 80
+    while (tbody.children.length > 80) {
+      tbody.removeChild(tbody.lastChild);
+    }
+  }
+
+  // After a clear, reset the flag so future entries show
+  if (logViewCleared) logViewCleared = false;
+}
+
+async function loadActivityLog() {
+  try {
+    const res = await fetch('/api/logs?limit=50');
+    if (!res.ok) return;
+    const entries = await res.json();
+    renderLogEntries(entries);
+  } catch (e) {
+    // Silently ignore
+  }
+}
+
+// ── Camera stream ─────────────────────────────────────────────────
 const cameraImg = document.getElementById('camera-feed');
 if (cameraImg) {
   cameraImg.src = '/video';
 }
 
-// ──────────────────────────────────────────────
-// MQTT SAFETY ALERT SYSTEM
-// ──────────────────────────────────────────────
+// ── Bluetooth status (via server-side /api/bt-status) ────────────
+async function checkBluetooth() {
+  const dot = document.getElementById('bt-dot');
+  const statusText = document.getElementById('bt-status-text');
+  const deviceName = document.getElementById('bt-device-name');
+  const audioStatus = document.getElementById('status-audio');
 
+  try {
+    const res = await fetch('/api/bt-status');
+    if (!res.ok) throw new Error('no endpoint');
+    const data = await res.json();
+
+    if (data.connected) {
+      if (dot) { dot.classList.add('connected'); }
+      if (statusText) statusText.innerText = 'Connected';
+      if (deviceName) deviceName.innerText = data.device || 'Bluetooth Device';
+      if (audioStatus) { audioStatus.innerText = 'BT Connected'; audioStatus.style.color = '#35ff4f'; }
+    } else {
+      if (dot) dot.classList.remove('connected');
+      if (statusText) statusText.innerText = data.message || 'Not Connected';
+      if (deviceName) deviceName.innerText = '—';
+      if (audioStatus) { audioStatus.innerText = 'BT Offline'; audioStatus.style.color = '#ffaa35'; }
+    }
+  } catch (_) {
+    // BT endpoint not available (Windows dev), show graceful fallback
+    if (dot) dot.classList.remove('connected');
+    if (statusText) statusText.innerText = 'N/A (RPi only)';
+    if (deviceName) deviceName.innerText = '—';
+    if (audioStatus) { audioStatus.innerText = 'N/A'; audioStatus.style.color = 'rgba(0,229,255,0.4)'; }
+  }
+}
+
+// ── MQTT Safety Alert System ──────────────────────────────────────
 function showDangerToast(reason) {
   const existing = document.getElementById('danger-toast');
   if (existing) existing.remove();
@@ -183,17 +319,14 @@ function showDangerToast(reason) {
 }
 
 function triggerDangerAlert(payload) {
-  // 1. Flash screen red (visual warning)
   const container = document.querySelector('.container');
   if (container) {
     container.classList.add('flash-danger');
     setTimeout(() => container.classList.remove('flash-danger'), 3000);
   }
 
-  // 2. Display the floating warning toast
   showDangerToast(payload.reason);
 
-  // 3. Log alert in the caretaker alerts table
   const alertsBody = document.getElementById('alerts-body');
   if (alertsBody) {
     const tr = document.createElement('tr');
@@ -227,44 +360,56 @@ async function initMQTT() {
     const res = await fetch('/api/mqtt-config');
     if (!res.ok) return;
     const mqttConfig = await res.json();
-    
-    console.log("[MQTT] Initializing connection to:", mqttConfig.broker, mqttConfig.port);
-    const clientId = "caretaker_dash_" + Math.random().toString(16).substr(2, 8);
-    const client = new Paho.MQTT.Client(mqttConfig.broker, Number(mqttConfig.port), "/mqtt", clientId);
+
+    console.log('[MQTT] Initializing connection to:', mqttConfig.broker, mqttConfig.port);
+    const clientId = 'caretaker_dash_' + Math.random().toString(16).substr(2, 8);
+    const client = new Paho.MQTT.Client(mqttConfig.broker, Number(mqttConfig.port), '/mqtt', clientId);
 
     client.onConnectionLost = (responseObject) => {
-      console.warn("[MQTT] Connection lost:", responseObject.errorMessage);
+      console.warn('[MQTT] Connection lost:', responseObject.errorMessage);
       setTimeout(initMQTT, 5000);
     };
 
     client.onMessageArrived = (message) => {
       try {
         const payload = JSON.parse(message.payloadString);
-        if (payload.status === "DANGER") {
-          console.log("[MQTT] Danger alert received:", payload);
+        if (payload.status === 'DANGER') {
+          console.log('[MQTT] Danger alert received:', payload);
           triggerDangerAlert(payload);
         }
       } catch (e) {
-        console.error("[MQTT] Error parsing message:", e);
+        console.error('[MQTT] Error parsing message:', e);
       }
     };
 
     const isSecurePort = Number(mqttConfig.port) === 8084;
     client.connect({
       onSuccess: () => {
-        console.log("[MQTT] Connected! Subscribing to:", mqttConfig.alerts_topic);
+        console.log('[MQTT] Connected! Subscribing to:', mqttConfig.alerts_topic);
         client.subscribe(mqttConfig.alerts_topic);
       },
       onFailure: (err) => {
-        console.error("[MQTT] Connection failed:", err);
+        console.error('[MQTT] Connection failed:', err);
         setTimeout(initMQTT, 5000);
       },
       useSSL: window.location.protocol === 'https:' || isSecurePort
     });
   } catch (err) {
-    console.warn("[MQTT] Setup failed:", err);
+    console.warn('[MQTT] Setup failed:', err);
   }
 }
 
-// Start MQTT listener
+// ── Init ──────────────────────────────────────────────────────────
+updateClock();
+setInterval(updateClock, 1000);
+
+loadTelemetry();
+setInterval(loadTelemetry, 1000);
+
+loadActivityLog();
+setInterval(loadActivityLog, 3000);
+
+checkBluetooth();
+setInterval(checkBluetooth, 10000);
+
 initMQTT();

@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Navigation — Sign Up</title>
+    <meta name="description" content="Create a new account for the AI Navigation Command Center">
+    <link rel="stylesheet" href="login.css">
+    <style>
+        /* Extra styles for sign-up page */
+        .info-msg {
+            background: rgba(53, 255, 79, 0.10);
+            border: 1px solid rgba(53, 255, 79, 0.4);
+            color: #35ff4f;
+            font-size: 12px;
+            padding: 10px 14px;
+            margin-bottom: 20px;
+            letter-spacing: 0.05em;
+            display: none;
+        }
+        .signup-link {
+            text-align: center;
+            margin-top: 16px;
+            font-size: 11px;
+            color: var(--text-dim);
+            letter-spacing: 0.12em;
+        }
+        .signup-link a {
+            color: var(--neon-cyan);
+            text-decoration: none;
+            transition: text-shadow 0.2s;
+        }
+        .signup-link a:hover {
+            text-shadow: 0 0 8px var(--neon-cyan);
+        }
+        .field .hint {
+            font-size: 10px;
+            color: rgba(0, 229, 255, 0.35);
+            margin-top: 5px;
+            letter-spacing: 0.08em;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="bg-grid"></div>
+    <div class="scanline"></div>
+
+    <div class="login-wrapper" style="max-width:460px;">
+
+        <div class="login-box">
+
+            <div class="brand">
+                <div class="brand-icon">
+                    <span class="eye-icon">🔐</span>
+                </div>
+                <div>
+                    <h1>AI NAVIGATION</h1>
+                    <p>CREATE ACCOUNT</p>
+                </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <div id="error-msg" class="error-msg" style="display: none;">
+                ⚠ Registration failed. Please try again.
+            </div>
+            <div id="success-msg" class="info-msg">
+                ✔ Account created! Redirecting to login...
+            </div>
+
+            <form id="signup-form" method="POST" action="/signup">
+
+                <div class="field">
+                    <label for="full_name">FULL NAME</label>
+                    <input type="text" id="full_name" name="full_name" placeholder="Enter your full name"
+                        autocomplete="off" required />
+                </div>
+
+                <div class="field">
+                    <label for="username">USERNAME</label>
+                    <input type="text" id="username" name="username" placeholder="Choose a username"
+                        autocomplete="off" required pattern="[a-zA-Z0-9_]{3,20}"
+                        title="3–20 characters: letters, numbers, underscores" />
+                    <div class="hint">3–20 characters · letters, digits, underscores only</div>
+                </div>
+
+                <div class="field">
+                    <label for="password">PASSWORD</label>
+                    <input type="password" id="password" name="password" placeholder="Create a strong password"
+                        required minlength="6" />
+                    <span class="toggle-pw" onclick="togglePassword('password')" title="Toggle visibility">👁</span>
+                    <div class="hint">Minimum 6 characters</div>
+                </div>
+
+                <div class="field">
+                    <label for="confirm_password">CONFIRM PASSWORD</label>
+                    <input type="password" id="confirm_password" name="confirm_password"
+                        placeholder="Re-enter password" required />
+                    <span class="toggle-pw" onclick="togglePassword('confirm_password')" title="Toggle visibility">👁</span>
+                </div>
+
+                <button class="login-btn" type="submit" id="register-btn">REGISTER</button>
+
+            </form>
+
+            <div class="signup-link">
+                Already have an account? <a href="/login">SIGN IN →</a>
+            </div>
+
+            <div class="status-row" style="margin-top:20px;">
+                <div class="dot"></div>
+                <span>SYSTEM ONLINE · AI NAVIGATION ACTIVE</span>
+            </div>
+
+        </div>
+
+    </div>
+
+    <script>
+        function togglePassword(fieldId) {
+            const pw = document.getElementById(fieldId);
+            pw.type = pw.type === 'password' ? 'text' : 'password';
+        }
+
+        document.getElementById('signup-form').addEventListener('submit', async function (e) {
+            e.preventDefault();
+
+            const errorMsg = document.getElementById('error-msg');
+            const successMsg = document.getElementById('success-msg');
+            const btn = document.getElementById('register-btn');
+
+            const fullName = document.getElementById('full_name').value.trim();
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            const confirmPassword = document.getElementById('confirm_password').value;
+
+            errorMsg.style.display = 'none';
+            successMsg.style.display = 'none';
+
+            // Client-side validation
+            if (password !== confirmPassword) {
+                errorMsg.innerText = '⚠ Passwords do not match.';
+                errorMsg.style.display = 'block';
+                return;
+            }
+            if (password.length < 6) {
+                errorMsg.innerText = '⚠ Password must be at least 6 characters.';
+                errorMsg.style.display = 'block';
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerText = 'REGISTERING...';
+
+            try {
+                const res = await fetch('/signup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ full_name: fullName, username, password })
+                });
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    successMsg.style.display = 'block';
+                    setTimeout(() => { window.location.href = '/login'; }, 1800);
+                } else {
+                    errorMsg.innerText = '⚠ ' + (data.error || 'Registration failed.');
+                    errorMsg.style.display = 'block';
+                    btn.disabled = false;
+                    btn.innerText = 'REGISTER';
+                }
+            } catch (err) {
+                errorMsg.innerText = '⚠ Network error. Please try again.';
+                errorMsg.style.display = 'block';
+                btn.disabled = false;
+                btn.innerText = 'REGISTER';
+            }
+        });
+    </script>
+
+</body>
+
+</html>

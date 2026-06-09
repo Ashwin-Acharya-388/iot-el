@@ -2,6 +2,8 @@ import glob
 import os
 import sys
 import io
+import json
+from datetime import datetime
 
 # Reconfigure stdout/stderr encoding on Windows to support Unicode characters
 if sys.platform.startswith('win'):
@@ -73,20 +75,97 @@ if HOST == "127.0.0.1":
 app = Flask(__name__, static_folder=UI_FOLDER, template_folder=UI_FOLDER)
 app.secret_key = 'your-secret-key-here'
 
-CREDENTIALS = {"admin": "blind2024"}
+# ── User store (persisted to users.json) ─────────────────────────────────────
+USERS_FILE = Path(BASE_DIR) / "config" / "users.json"
+
+def _load_users():
+    if USERS_FILE.exists():
+        try:
+            with open(USERS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # Default built-in admin account
+    return {"admin": {"password": "blind2024", "full_name": "Administrator"}}
+
+def _save_users(users):
+    try:
+        with open(USERS_FILE, "w") as f:
+            json.dump(users, f, indent=2)
+    except Exception as e:
+        print(f"[AUTH] Could not save users file: {e}")
+
+USERS = _load_users()
+
+# ── Activity log (in-memory, last 200 entries) ────────────────────────────────
+ACTIVITY_LOG = []
+LOG_LOCK = threading.Lock()
+
+def add_log(event_type: str, message: str, level: str = "info"):
+    """Append a structured log entry. Levels: info | warn | danger"""
+    entry = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "type": event_type,
+        "message": message,
+        "level": level
+    }
+    with LOG_LOCK:
+        ACTIVITY_LOG.append(entry)
+        if len(ACTIVITY_LOG) > 200:
+            ACTIVITY_LOG.pop(0)
+    print(f"[LOG] [{level.upper()}] [{event_type}] {message}")
+
+# ── Auth routes ───────────────────────────────────────────────────────────────
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        u = request.form.get('username')
-        p = request.form.get('password')
-        if CREDENTIALS.get(u) == p:
+        u = request.form.get('username', '').strip()
+        p = request.form.get('password', '')
+        user_rec = USERS.get(u)
+        if user_rec and user_rec.get('password') == p:
             session['user'] = u
+            add_log("AUTH", f"User '{u}' logged in successfully.", "info")
             return redirect(url_for('index'))
-        return send_from_directory(UI_FOLDER, 'login.html')
+        add_log("AUTH", f"Failed login attempt for username '{u}'.", "warn")
+        return redirect(url_for('login') + '?error=1')
     return send_from_directory(UI_FOLDER, 'login.html')
+
+@app.route('/signup', methods=['GET', 'POST'])
+def signup():
+    if request.method == 'GET':
+        return send_from_directory(UI_FOLDER, 'signup.html')
+
+    # Accept JSON body (from fetch) or form data
+    if request.is_json:
+        data = request.get_json(force=True) or {}
+    else:
+        data = request.form.to_dict()
+
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
+    full_name = data.get('full_name', '').strip()
+
+    if not username or not password:
+        return jsonify({"success": False, "error": "Username and password are required."}), 400
+    if len(username) < 3 or len(username) > 20:
+        return jsonify({"success": False, "error": "Username must be 3–20 characters."}), 400
+    if len(password) < 6:
+        return jsonify({"success": False, "error": "Password must be at least 6 characters."}), 400
+
+    global USERS
+    USERS = _load_users()  # Refresh before writing
+    if username in USERS:
+        return jsonify({"success": False, "error": "Username already exists."}), 409
+
+    USERS[username] = {"password": password, "full_name": full_name or username}
+    _save_users(USERS)
+    add_log("AUTH", f"New user registered: '{username}' ({full_name}).", "info")
+    return jsonify({"success": True}), 201
 
 @app.route('/logout')
 def logout():
+    user = session.get('user', 'unknown')
+    add_log("AUTH", f"User '{user}' logged out.", "info")
     session.clear()
     return redirect(url_for('login'))
 voice = VoiceCommands(cooldown=1.2) if VoiceCommands is not None else None
@@ -201,7 +280,7 @@ def detect_obstacles_canny(frame):
         cx = (x + box_w / 2) / max(1, w)
         cy = (y + box_h / 2) / max(1, h)
         distance = max(0.4, min(8.0, 1.2 + 140.0 / (box_h + 1e-6)))
-        label = "Object"
+        label = "Obstacle"
 
         obstacles.append({
             "label": label,
@@ -357,7 +436,7 @@ def run_navigation_loop():
                     cy = (y + box_h / 2) / 320.0
                     distance = max(0.4, min(8.0, 1.2 + 140.0 / (box_h + 1e-6)))
                     
-                    label = "Object"
+                    label = "Obstacle"
                         
                     obstacles.append({
                         "label": label,
@@ -417,13 +496,13 @@ def run_navigation_loop():
 
                 obstacles = [
                     {
-                        "label": "Object",
+                        "label": "Obstacle",
                         "distance": round(float(dist1), 1),
                         "x": x1_min, "y": y1_min, "w": (x1_max - x1_min), "h": (y1_max - y1_min),
                         "center_x": round(float(cx1), 2), "center_y": round(float(cy1), 2)
                     },
                     {
-                        "label": "Object",
+                        "label": "Obstacle",
                         "distance": round(float(dist2), 1),
                         "x": x2_min, "y": y2_min, "w": (x2_max - x2_min), "h": (y2_max - y2_min),
                         "center_x": round(float(cx2), 2), "center_y": round(float(cy2), 2)
@@ -515,10 +594,12 @@ def run_navigation_loop():
                 }
             })
 
-        # Voice alerting logic
+        # Voice alerting logic + log
         if voice is not None and obstacle_count > 0 and obstacles[0]['distance'] < 3.5:
-            alert_text = f"Object detected. Count of objects: {obstacle_count}."
+            alert_text = f"Obstacle detected. Count of obstacles: {obstacle_count}."
             voice.speak(alert_text)
+            level = "danger" if obstacles[0]['distance'] < 1.8 else "warn"
+            add_log("NAV", f"DIR={direction} | Obstacles={obstacle_count} | Closest={obstacles[0]['distance']}m", level)
 
         # MQTT telemetry logging
         if HAS_MQTT:
@@ -611,9 +692,47 @@ def speak():
     if not text:
         return "No text provided", 400
     print(f"[AUDIO LOG] System Spoke: {text}")
+    add_log("VOICE", f"TTS output: {text}", "info")
     if voice is not None:
         voice.speak(text)
     return "OK", 200
+
+@app.route('/api/logs')
+def get_logs():
+    """Returns the last N activity log entries as JSON."""
+    limit = min(int(request.args.get('limit', 50)), 200)
+    with LOG_LOCK:
+        entries = list(reversed(ACTIVITY_LOG[-limit:]))
+    return jsonify(entries)
+
+@app.route('/api/bt-status')
+def bt_status():
+    """Returns Bluetooth audio device connection status (Linux/RPi only)."""
+    import subprocess
+    try:
+        # List connected devices via bluetoothctl
+        result = subprocess.run(
+            ['bluetoothctl', 'info'],
+            capture_output=True, text=True, timeout=3
+        )
+        output = result.stdout
+        if 'Connected: yes' in output:
+            # Extract device name
+            name = 'Bluetooth Device'
+            for line in output.splitlines():
+                line = line.strip()
+                if line.startswith('Name:'):
+                    name = line.split('Name:', 1)[1].strip()
+                    break
+            add_log("BT", f"Bluetooth device connected: {name}", "info")
+            return jsonify({'connected': True, 'device': name})
+        else:
+            return jsonify({'connected': False, 'message': 'No device connected'})
+    except FileNotFoundError:
+        return jsonify({'connected': False, 'message': 'bluetoothctl not found (Windows?)'})
+    except Exception as e:
+        return jsonify({'connected': False, 'message': str(e)})
+
 
 @atexit.register
 def cleanup():
