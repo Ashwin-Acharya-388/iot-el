@@ -228,9 +228,15 @@ async function initMQTT() {
     if (!res.ok) return;
     const mqttConfig = await res.json();
     
-    console.log("[MQTT] Initializing connection to:", mqttConfig.broker, mqttConfig.port);
+    let brokerHost = mqttConfig.broker;
+    if (brokerHost === '127.0.0.1' || brokerHost === 'localhost') {
+      brokerHost = window.location.hostname;
+    }
+    
+    console.log("[MQTT] Initializing connection to:", brokerHost, mqttConfig.port);
     const clientId = "caretaker_dash_" + Math.random().toString(16).substr(2, 8);
-    const client = new Paho.MQTT.Client(mqttConfig.broker, Number(mqttConfig.port), "/mqtt", clientId);
+    const client = new Paho.MQTT.Client(brokerHost, Number(mqttConfig.port), "/mqtt", clientId);
+
 
     client.onConnectionLost = (responseObject) => {
       console.warn("[MQTT] Connection lost:", responseObject.errorMessage);
