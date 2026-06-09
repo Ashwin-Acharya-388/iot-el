@@ -11,6 +11,8 @@
 
 # ── Web dashboard / streaming ─────────────────────────────────
 Flask>=3.0.0               # Dashboard and live video endpoints
+paho-mqtt>=2.1.0           # MQTT telemetry and cloud alert routing
+firebase-admin>=6.5.0      # Firebase incident logging
 
 # ── YOLO and Computer Vision ──────────────────────────────────
 ultralytics>=8.2.0         # YOLOv8: training, export, validation

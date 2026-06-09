@@ -1,9 +1,10 @@
 mqtt:
-  broker: "broker.emqx.io"
+  broker: "127.0.0.1"
   port: 8083
   topic: "iot/navigation"
   status_topic: "iot/navigation/status"
   alerts_topic: "iot/navigation/alerts"
+  health_topic: "iot/navigation/health"
 
 dashboard:
   host: "127.0.0.1"
