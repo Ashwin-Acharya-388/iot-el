@@ -20,6 +20,39 @@ let lastSpoken = '';
 let activeLogFilter = 'all';
 let logViewCleared = false;
 let knownLogTimestamps = new Set();
+let voiceEnabled = false;   // User must click once to enable (browser policy)
+
+// ── Web Speech API (Laptop Speaker) ──────────────────────────────
+const synth = window.speechSynthesis;
+
+function speakOnLaptop(text) {
+  if (!voiceEnabled || !synth) return;
+  synth.cancel();                          // Stop any current speech
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.rate   = 1.1;                      // Slightly faster than default
+  utter.pitch  = 1.0;
+  utter.volume = 1.0;
+  // Prefer a clear English voice if available
+  const voices = synth.getVoices();
+  const preferred = voices.find(v =>
+    v.lang.startsWith('en') && (v.name.includes('Google') || v.name.includes('Natural') || v.localService)
+  );
+  if (preferred) utter.voice = preferred;
+  synth.speak(utter);
+}
+
+function enableVoice() {
+  voiceEnabled = true;
+  const btn = document.getElementById('voice-enable-btn');
+  if (btn) {
+    btn.innerText = '🔊 Voice ON';
+    btn.style.background = 'linear-gradient(135deg, #00e5ff33, #35ff4f33)';
+    btn.style.borderColor = '#35ff4f';
+    btn.style.color = '#35ff4f';
+  }
+  // Trigger a test utterance so browser unlocks audio
+  speakOnLaptop('Voice enabled');
+}
 
 // ── Status helpers ────────────────────────────────────────────────
 function setStatus(isActive) {
@@ -92,8 +125,7 @@ function updateDashboard(data) {
       (data.obstacles?.length > 0 || (data.direction || 'FORWARD') !== 'FORWARD');
 
     if (shouldSpeak) {
-      fetch(`/speak?text=${encodeURIComponent(currentCommand)}`)
-        .catch(() => console.warn('[FRONTEND] Voice request failed.'));
+      speakOnLaptop(currentCommand);   // Plays through laptop speaker
       lastSpoken = currentCommand;
     }
   }
@@ -433,3 +465,30 @@ checkBluetooth();
 setInterval(checkBluetooth, 10000);
 
 initMQTT();
+
+// ── Voice Enable Button (browser requires user gesture) ───────────
+// Inject a floating enable button if not already in HTML
+if (!document.getElementById('voice-enable-btn')) {
+  const btn = document.createElement('button');
+  btn.id = 'voice-enable-btn';
+  btn.innerText = '🔇 Click to Enable Voice';
+  btn.title = 'Enable laptop speaker voice commands';
+  Object.assign(btn.style, {
+    position:     'fixed',
+    bottom:       '24px',
+    right:        '24px',
+    zIndex:       '9999',
+    padding:      '10px 18px',
+    borderRadius: '30px',
+    border:       '1px solid #00e5ff',
+    background:   'rgba(0,0,0,0.7)',
+    color:        '#00e5ff',
+    fontFamily:   'inherit',
+    fontSize:     '13px',
+    cursor:       'pointer',
+    backdropFilter: 'blur(8px)',
+    transition:   'all 0.3s ease',
+  });
+  btn.onclick = enableVoice;
+  document.body.appendChild(btn);
+}

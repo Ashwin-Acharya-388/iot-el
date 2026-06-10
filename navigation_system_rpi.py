@@ -4,15 +4,18 @@ navigation_system_rpi.py
 Main navigation system for the Raspberry Pi 4B head-mounted assistant.
 
 Architecture:
-  Camera → ONNX Inference → ByteTrack → Temporal Smoothing
+  Camera → YOLOv8n ONNX Inference → ByteTrack → Temporal Smoothing
   → Clear Path Finder → Sliding Window Majority Vote → Voice Command
 
-Target: 5-6 FPS @ 320×320 on RPi 4B with QAT INT8 model
+Model: Standard YOLOv8n (80 COCO classes) — all detections reported
+as generic "obstacle" for simplified voice guidance.
+
+Target: 5-6 FPS @ 320×320 on RPi 4B
 Press Ctrl+C to stop gracefully.
 
 Usage:
     python navigation_system_rpi.py
-    python navigation_system_rpi.py --model ./models/yolov8n_qat.onnx
+    python navigation_system_rpi.py --model ./models/yolov8n.onnx
     python navigation_system_rpi.py --camera 0 --conf 0.45 --debug
 """
 
@@ -32,7 +35,7 @@ import numpy as np
 # CONFIGURATION
 # ──────────────────────────────────────────────
 
-DEFAULT_MODEL   = Path("./models/yolov8n_qat.onnx")
+DEFAULT_MODEL   = Path("./models/yolov8n.onnx")
 CAMERA_IDX      = 0
 FRAME_SIZE      = (320, 320)
 CONF_THRESHOLD  = 0.45
@@ -53,14 +56,31 @@ ZONE_DANGER = {
     "right":  1.0,
 }
 
-# Class ID → display name (must match dataset.yaml — 11 instance-level classes)
-CLASS_NAMES = [
-    "person", "rider", "car", "truck", "bus", "train", "motorcycle", "bicycle",
-    "traffic light", "traffic sign", "pole",
+# YOLOv8n standard COCO 80-class names (used internally for detection)
+COCO_CLASS_NAMES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
+    "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
+    "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra",
+    "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove",
+    "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup",
+    "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
+    "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
+    "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+    "hair drier", "toothbrush",
 ]
 
-# High-danger classes (close proximity = immediate stop/redirect)
-HIGH_DANGER_CLASSES = {0, 1, 2, 3, 4, 5, 6, 7}  # Persons, vehicles
+# ALL detections are displayed as "obstacle" to the user
+DISPLAY_NAME = "obstacle"
+
+# For backward compatibility, CLASS_NAMES maps to the COCO list
+CLASS_NAMES = COCO_CLASS_NAMES
+
+# High-danger classes: people and vehicles (COCO class IDs)
+# person=0, bicycle=1, car=2, motorcycle=3, bus=5, train=6, truck=7
+HIGH_DANGER_CLASSES = {0, 1, 2, 3, 5, 6, 7}
 
 
 # ──────────────────────────────────────────────
@@ -232,57 +252,39 @@ class TemporalSmoother:
 # DISTANCE ESTIMATION
 # ──────────────────────────────────────────────
 
-ASSUMED_OBJECT_WIDTH = {
-    # Assumed real-world sizes (meters)
-    "person": 0.5,
-    "car": 1.8,
-    "truck": 2.5,
-    "bus": 2.8,
-    "motorcycle": 0.7,
-    "bicycle": 0.6,
-}
+# Default assumed obstacle width (meters) — generic since all objects
+# are reported as "obstacle" regardless of COCO class
+DEFAULT_OBSTACLE_WIDTH = 1.0
 
 def estimate_distance(det: tuple, frame_w: int = 320, class_names: list = None) -> float:
     """
-    Estimate distance to object based on bounding box size.
+    Estimate distance to obstacle based on bounding box size.
     
     ALGORITHM:
     Uses a pinhole camera model:
-        distance = (assumed_width * focal_length_pixels) / bbox_width_pixels
+        distance = (assumed_width * focal_length_pixels) / bbox_height_pixels
     
-    We assume focal length ≈ frame_width (320px) for a typical mobile camera.
-    Then: distance ≈ (assumed_width * 320) / bbox_width
+    Since all objects are treated as generic "obstacle", we use a single
+    assumed width of 1.0 meter.
     
     Args:
         det: Detection tuple (x1, y1, x2, y2, conf, class_id)
         frame_w: Frame width in pixels (320)
-        class_names: List of class names for lookup
+        class_names: Unused, kept for API compat
     
     Returns:
-        Estimated distance in meters (0.5 to 20+)
+        Estimated distance in meters (0.1 to 20)
     """
-    x1, y1, x2, y2, conf, cls_id = det[0], det[1], det[2], det[3], det[4], int(det[5])
     y1, y2 = det[1], det[3]
     bbox_height = y2 - y1
     if bbox_height < 0.5:
         return 20.0  # Very far away or invalid
-    calibration_constant = 112.0
-  
-    assumed_h = 1.0
-    # Get assumed object width
-    class_name = CLASS_NAMES[cls_id] if cls_id < len(CLASS_NAMES) else "unknown"
-    assumed_width = ASSUMED_OBJECT_WIDTH.get(class_name, 1.0)  # Default 1 meter
     
-    # Focal length approximation (adjusted for 320x320 frame)
-    focal_length = 320
-    
-    # Distance = (real_width * focal_length) / bbox_height
+    # Distance = calibration_constant / bbox_height
     distance = (85.0 * 10) / bbox_height
     
     # Clamp to reasonable range
     return max(0.1, min(distance, 20.0))
-    
-    return distance
 
 
 def get_closest_obstacle(tracked_dets: list, frame_w: int = 320, frame_h: int = 320) -> Optional[Tuple[str, float]]:
@@ -302,9 +304,8 @@ def get_closest_obstacle(tracked_dets: list, frame_w: int = 320, frame_h: int = 
         dist = estimate_distance(det, frame_w)
         if dist < closest_dist:
             closest_dist = dist
-            cls_id = int(det[5])
-            class_name = CLASS_NAMES[cls_id] if cls_id < len(CLASS_NAMES) else "obstacle"
-            closest = (class_name, dist)
+            # All detections are labeled as "obstacle"
+            closest = (DISPLAY_NAME, dist)
     
     return closest
 
@@ -631,9 +632,9 @@ class NavigationSystem:
             if self.voter.stable and voted_direction != prev_command:
                 # Generate distance-aware message
                 if closest_obs:
-                    class_name, distance = closest_obs
-                    # Create rich output like: "Car, 2.3 meters ahead"
-                    output_msg = f"{voted_direction} • {class_name.capitalize()} {distance:.1f}m"
+                    obs_name, distance = closest_obs
+                    # Output like: "Left • Obstacle 2.3m"
+                    output_msg = f"{voted_direction} • {obs_name.capitalize()} {distance:.1f}m"
                     self.voice.speak(output_msg)
                 else:
                     self.voice.speak(voted_direction)
@@ -651,10 +652,6 @@ class NavigationSystem:
                       f"Obs: {n_obs:2d} | Raw: {raw_direction:<12} | "
                       f"Vote: {voted_direction}")
 
-            # ── Optional display (disable on headless RPi) ─
-            if self.debug and not self._is_headless():
-                self._draw_debug(frame, smoothed, voted_direction, fps, lat_ms)
-
         # Cleanup
         self.cap.release()
         if not self._is_headless():
@@ -663,36 +660,7 @@ class NavigationSystem:
         self.voice.shutdown()
         print("  ✓ Shutdown complete.")
 
-    def _is_headless(self) -> bool:
-        return os.environ.get("DISPLAY", "") == "" and not self.debug
 
-    def _draw_debug(self, frame, dets, direction, fps, lat_ms):
-        """Draw bounding boxes and overlay on frame for visual debugging."""
-        import cv2
-        vis = frame.copy()
-
-        # Zone dividers
-        cv2.line(vis, (int(320*ZONE_LEFT_MAX), 0),  (int(320*ZONE_LEFT_MAX), 320),  (200,200,0), 1)
-        cv2.line(vis, (int(320*ZONE_RIGHT_MIN), 0), (int(320*ZONE_RIGHT_MIN), 320), (200,200,0), 1)
-
-        for det in dets:
-            x1,y1,x2,y2 = int(det[0]),int(det[1]),int(det[2]),int(det[3])
-            conf  = det[4]
-            cls   = int(det[5])
-            label = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else str(cls)
-            color = (0,0,255) if cls in HIGH_DANGER_CLASSES else (0,200,100)
-            cv2.rectangle(vis, (x1,y1), (x2,y2), color, 1)
-            cv2.putText(vis, f"{label} {conf:.2f}", (x1, max(0, y1-5)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-
-        # Direction overlay
-        cv2.putText(vis, f"→ {direction}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,255,0), 2)
-        cv2.putText(vis, f"FPS:{fps:.1f} Lat:{lat_ms:.0f}ms", (10, 310),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200,200,200), 1)
-
-        cv2.imshow("Navigation Debug", vis)
-        cv2.waitKey(1)
 
 
 # ──────────────────────────────────────────────
