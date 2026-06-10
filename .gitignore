@@ -11,3 +11,4 @@ leftImg8bit_trainvaltest/
 gtFine_trainvaltest/
 models/
 runs/
+venv/
