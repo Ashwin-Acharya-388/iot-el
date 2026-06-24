@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SafeGuide — Caretaker Portal</title>
+  <meta name="description" content="Remote monitoring portal for IoT Navigation Assistant — track your loved one's safety in real time.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ══════════════════ HEADER ══════════════════ -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+            <path d="M2 17l10 5 10-5"/>
+            <path d="M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <div>
+          <div class="brand-name">SafeGuide</div>
+          <div class="brand-sub">Caretaker Remote Portal</div>
+        </div>
+      </div>
+
+      <div class="header-status">
+        <div class="live-badge" id="live-badge">
+          <span class="live-dot"></span>
+          <span id="live-badge-text">Connecting…</span>
+        </div>
+        <div class="last-updated" id="last-updated">—</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ══════════════════ CONFIG BANNER (shown until Firebase is configured) ══════════════════ -->
+  <div class="config-banner" id="config-banner">
+    <div class="config-inner">
+      <span class="config-icon">⚙️</span>
+      <span>Open <strong>firebase-config.js</strong> and paste your Firebase project credentials to activate live monitoring.</span>
+      <button class="config-dismiss" onclick="document.getElementById('config-banner').style.display='none'">Dismiss</button>
+    </div>
+  </div>
+
+  <!-- ══════════════════ MAIN GRID ══════════════════ -->
+  <main class="main-grid">
+
+    <!-- ── ROW 1: Status Cards ── -->
+    <section class="cards-row">
+
+      <!-- Direction -->
+      <div class="card card--direction" id="card-direction">
+        <div class="card-label">NAVIGATION</div>
+        <div class="direction-display" id="direction-display">
+          <div class="direction-arrow" id="direction-arrow">↑</div>
+          <div class="direction-text" id="direction-text">—</div>
+        </div>
+        <div class="card-sub" id="direction-sub">Waiting for data…</div>
+      </div>
+
+      <!-- Obstacle -->
+      <div class="card card--obstacle" id="card-obstacle">
+        <div class="card-label">OBSTACLES</div>
+        <div class="obstacle-count" id="obstacle-count">—</div>
+        <div class="obstacle-dist" id="obstacle-dist">—</div>
+        <div class="card-sub">Nearest detected</div>
+      </div>
+
+      <!-- System Status -->
+      <div class="card card--system">
+        <div class="card-label">SYSTEM</div>
+        <div class="system-rows">
+          <div class="sys-row">
+            <span class="sys-key">Camera</span>
+            <span class="sys-val" id="sys-camera">—</span>
+          </div>
+          <div class="sys-row">
+            <span class="sys-key">Model</span>
+            <span class="sys-val" id="sys-model">—</span>
+          </div>
+          <div class="sys-row">
+            <span class="sys-key">Server</span>
+            <span class="sys-val" id="sys-server">—</span>
+          </div>
+          <div class="sys-row">
+            <span class="sys-key">FPS</span>
+            <span class="sys-val" id="sys-fps">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Alert Summary -->
+      <div class="card card--alerts-summary">
+        <div class="card-label">TODAY'S ALERTS</div>
+        <div class="alert-count" id="alert-today-count">—</div>
+        <div class="card-sub">Danger events</div>
+        <div class="alert-last" id="alert-last-time">Last: —</div>
+      </div>
+
+    </section>
+
+    <!-- ── ROW 2: Danger Alert Panel ── -->
+    <div class="danger-banner hidden" id="danger-banner">
+      <div class="danger-icon">⚠️</div>
+      <div class="danger-content">
+        <div class="danger-title" id="danger-title">DANGER — Obstacle Too Close</div>
+        <div class="danger-detail" id="danger-detail">—</div>
+      </div>
+      <div class="danger-time" id="danger-time">—</div>
+    </div>
+
+    <!-- ── ROW 3: Alerts Feed + Activity Log ── -->
+    <section class="bottom-row">
+
+      <!-- Live Camera Feed -->
+      <div class="panel panel--camera">
+        <div class="panel-header">
+          <h2 class="panel-title">📷 Live Camera Feed</h2>
+          <span class="panel-badge" id="camera-fps-badge">— FPS</span>
+        </div>
+        <div class="camera-container">
+          <div class="camera-overlay-text" id="camera-overlay-text">Camera offline</div>
+          <img id="camera-feed" class="camera-img hidden" src="" alt="Live Video Feed" />
+        </div>
+      </div>
+
+      <!-- Real-time Alerts Feed -->
+      <div class="panel panel--alerts">
+        <div class="panel-header">
+          <h2 class="panel-title">🔔 Live Alerts</h2>
+          <span class="panel-badge" id="alert-count-badge">0</span>
+        </div>
+        <div class="alerts-scroll" id="alerts-scroll">
+          <div class="empty-state" id="alerts-empty">
+            <div class="empty-icon">✅</div>
+            <div>No alerts yet — all clear!</div>
+          </div>
+          <div id="alerts-list"></div>
+        </div>
+      </div>
+
+      <!-- Activity Log -->
+      <div class="panel panel--logs">
+        <div class="panel-header">
+          <h2 class="panel-title">📋 Activity Log</h2>
+          <div class="log-filters">
+            <button class="log-filter active" onclick="setFilter(this,'all')" data-filter="all">All</button>
+            <button class="log-filter" onclick="setFilter(this,'warn')" data-filter="warn">Warn</button>
+            <button class="log-filter" onclick="setFilter(this,'danger')" data-filter="danger">Danger</button>
+          </div>
+        </div>
+        <div class="log-scroll" id="log-scroll">
+          <div class="empty-state" id="logs-empty">
+            <div class="empty-icon">📡</div>
+            <div>Listening for log events…</div>
+          </div>
+          <table class="log-table" id="log-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Type</th>
+                <th>Level</th>
+                <th>Message</th>
+              </tr>
+            </thead>
+            <tbody id="log-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- ══════════════════ FOOTER ══════════════════ -->
+  <footer class="footer">
+    <span>SafeGuide Caretaker Portal · Powered by Firebase &amp; IoT Navigation Assistant</span>
+    <span id="footer-clock">—</span>
+  </footer>
+
+  <!-- ══════════════════ SCRIPTS ══════════════════ -->
+
+  <!-- Firebase SDKs (v9 modular via CDN compat shim) -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import {
+      getFirestore,
+      doc, onSnapshot,
+      collection, query, orderBy, limit
+    } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+    // ── Load user config ──────────────────────────────────────────────────────
+    // firebase-config.js must export window.FIREBASE_CONFIG = { apiKey, ... }
+    // We import it as a classic script tag below; here we just reference it.
+
+    const cfg = window.FIREBASE_CONFIG;
+    const configBanner = document.getElementById('config-banner');
+
+    if (!cfg || !cfg.apiKey || cfg.apiKey === 'YOUR_API_KEY') {
+      // Config not filled in — stay in demo mode
+      configBanner.style.display = 'flex';
+      startDemoMode();
+    } else {
+      configBanner.style.display = 'none';
+      startFirebaseMode(cfg, { initializeApp, getFirestore, doc, onSnapshot, collection, query, orderBy, limit });
+    }
+
+    // ── Canvas-based camera frame generator for Demo Mode ──────────────────────
+    const demoCanvas = document.createElement('canvas');
+    demoCanvas.width = 240;
+    demoCanvas.height = 240;
+    const demoCtx = demoCanvas.getContext('2d');
+
+    function generateDemoFrame(direction, obstacleCount, closestDistance) {
+      // 1. Clear with dark blue floor/sky background
+      demoCtx.fillStyle = '#0f1626';
+      demoCtx.fillRect(0, 0, 240, 240);
+
+      // 2. Draw walls / sky perspective
+      demoCtx.fillStyle = '#17223b';
+      demoCtx.beginPath();
+      demoCtx.moveTo(0, 0);
+      demoCtx.lineTo(240, 0);
+      demoCtx.lineTo(240, 110);
+      demoCtx.lineTo(0, 110);
+      demoCtx.closePath();
+      demoCtx.fill();
+
+      // 3. Draw walkable ground path (green overlay)
+      demoCtx.fillStyle = 'rgba(54, 247, 151, 0.25)';
+      demoCtx.strokeStyle = '#36f797';
+      demoCtx.lineWidth = 2;
+      demoCtx.beginPath();
+
+      // Drift the walkable center depending on the direction
+      let drift = 0;
+      if (direction === 'LEFT' || direction === 'SLIGHT LEFT') drift = -40;
+      if (direction === 'RIGHT' || direction === 'SLIGHT RIGHT') drift = 40;
+      if (direction === 'STOP') drift = 0;
+
+      // Draw path polygon (perspective trapezoid)
+      demoCtx.moveTo(85, 110);
+      demoCtx.lineTo(155, 110);
+      if (direction === 'STOP') {
+        // Blocked path
+        demoCtx.lineTo(135, 240);
+        demoCtx.lineTo(105, 240);
+      } else {
+        demoCtx.lineTo(190 + drift, 240);
+        demoCtx.lineTo(50 + drift, 240);
+      }
+      demoCtx.closePath();
+      demoCtx.fill();
+      demoCtx.stroke();
+
+      // 4. Draw obstacles if present
+      if (obstacleCount > 0 && closestDistance) {
+        const dist = parseFloat(closestDistance);
+        // Scale size based on distance
+        const size = Math.max(20, Math.min(90, 100 / dist));
+        const ox = 120 + (drift * 0.5) - size/2;
+        const oy = 150 - size/2;
+
+        demoCtx.fillStyle = 'rgba(255, 64, 96, 0.35)';
+        demoCtx.strokeStyle = '#ff4060';
+        demoCtx.lineWidth = 2;
+        demoCtx.fillRect(ox, oy, size, size);
+        demoCtx.strokeRect(ox, oy, size, size);
+
+        // Alert text overlay
+        demoCtx.fillStyle = '#ff4060';
+        demoCtx.font = 'bold 9px monospace';
+        demoCtx.fillText(`OBSTACLE: ${dist}m`, ox + 2, oy - 4);
+      }
+
+      // Return base64 string without the prefix
+      const dataUrl = demoCanvas.toDataURL('image/jpeg', 0.6);
+      return dataUrl.split(',')[1];
+    }
+
+    // ── Demo mode (no Firebase) ───────────────────────────────────────────────
+    function startDemoMode() {
+      setLiveBadge('demo', 'Demo Mode');
+      const directions = ['FORWARD','SLIGHT LEFT','SLIGHT RIGHT','STOP','FORWARD','FORWARD'];
+      let i = 0;
+      setInterval(() => {
+        const dir = directions[i++ % directions.length];
+        const obs = Math.floor(Math.random() * 4);
+        const dist = (Math.random() * 3 + 0.5).toFixed(1);
+        const frameBase64 = generateDemoFrame(dir, obs, obs > 0 ? dist : null);
+        updateTelemetry({
+          direction: dir,
+          fps: (Math.random() * 5 + 6).toFixed(1),
+          obstacle_count: obs,
+          closest_obstacle_m: obs > 0 ? dist : null,
+          camera_frame: frameBase64,
+          camera_status: 'Connected',
+          model_status: 'Free-space ONNX',
+          server_status: 'Active',
+        });
+      }, 2000);
+
+      // Fake demo alerts
+      setTimeout(() => addAlert({ event:'STOP_STREAK', details:'User stopped for 3 consecutive frames', level:'warn', timestamp: new Date().toISOString() }), 3000);
+      setTimeout(() => addAlert({ event:'DANGER_OBSTACLE', details:'Direction=STOP | Obstacles=2 | Closest=0.9m', level:'danger', timestamp: new Date().toISOString() }), 7000);
+    }
+
+    // ── Firebase live mode ────────────────────────────────────────────────────
+    function startFirebaseMode(cfg, fb) {
+      const app = fb.initializeApp(cfg);
+      const db  = fb.getFirestore(app);
+
+      setLiveBadge('connecting', 'Connecting…');
+
+      // 1. Real-time telemetry listener (document)
+      const liveDocRef = fb.doc(db, 'telemetry', 'live');
+      fb.onSnapshot(liveDocRef, (snap) => {
+        if (snap.exists()) {
+          setLiveBadge('live', 'LIVE');
+          updateTelemetry(snap.data());
+          const timestampStr = snap.data().last_updated || snap.data().timestamp;
+          document.getElementById('last-updated').textContent =
+            'Updated ' + timeAgo(timestampStr);
+          document.getElementById('last-updated').dataset.ts = timestampStr;
+        } else {
+          setLiveBadge('offline', 'No Data Yet');
+        }
+      }, (err) => {
+        console.error('Telemetry listener error:', err);
+        setLiveBadge('offline', 'Connection Error');
+      });
+
+      // 2. Real-time alerts listener (last 50, newest first)
+      const alertsQuery = fb.query(
+        fb.collection(db, 'alerts'),
+        fb.orderBy('timestamp', 'desc'),
+        fb.limit(50)
+      );
+      fb.onSnapshot(alertsQuery, (snap) => {
+        const alertsList = document.getElementById('alerts-list');
+        const alertsEmpty = document.getElementById('alerts-empty');
+        alertsList.innerHTML = '';
+        let todayCount = 0;
+        const today = new Date().toDateString();
+
+        snap.forEach(docSnap => {
+          const data = docSnap.data();
+          if (new Date(data.timestamp).toDateString() === today) todayCount++;
+          addAlertRow(data, alertsList);
+        });
+
+        alertsEmpty.style.display = snap.empty ? 'flex' : 'none';
+        document.getElementById('alert-count-badge').textContent = snap.size;
+        document.getElementById('alert-today-count').textContent = todayCount;
+
+        // Show/hide danger banner for latest alert
+        if (!snap.empty) {
+          const latest = snap.docs[0].data();
+          const level = latest.level || (latest.alert_type === 'DANGER' ? 'danger' : 'warn');
+          if (level === 'danger') {
+            showDangerBanner(latest);
+          }
+          document.getElementById('alert-last-time').textContent =
+            'Last: ' + formatTime(latest.timestamp);
+        }
+      });
+
+      // 3. Activity log listener (last 100 warn/danger entries)
+      const logsQuery = fb.query(
+        fb.collection(db, 'activity_logs'),
+        fb.orderBy('timestamp', 'desc'),
+        fb.limit(100)
+      );
+      fb.onSnapshot(logsQuery, (snap) => {
+        const tbody = document.getElementById('log-body');
+        const logsEmpty = document.getElementById('logs-empty');
+        tbody.innerHTML = '';
+        snap.forEach(docSnap => addLogRow(docSnap.data(), tbody));
+        logsEmpty.style.display = snap.empty ? 'flex' : 'none';
+        document.getElementById('log-table').style.display = snap.empty ? 'none' : 'table';
+      });
+    }
+
+    // ── UI update helpers ─────────────────────────────────────────────────────
+
+    const DIRECTION_ARROW = {
+      'FORWARD': '↑', 'STOP': '⛔', 'LEFT': '←', 'RIGHT': '→',
+      'SLIGHT LEFT': '↖', 'SLIGHT RIGHT': '↗', 'BACK': '↓'
+    };
+
+    function updateTelemetry(data) {
+      const dir = (data.navigation_status || data.direction || 'UNKNOWN').toUpperCase();
+      document.getElementById('direction-text').textContent = dir;
+      document.getElementById('direction-arrow').textContent = DIRECTION_ARROW[dir] || '•';
+
+      const card = document.getElementById('card-direction');
+      card.className = 'card card--direction';
+      if (dir === 'STOP') card.classList.add('state--danger');
+      else if (dir.includes('LEFT') || dir.includes('RIGHT')) card.classList.add('state--warn');
+      else card.classList.add('state--ok');
+
+      document.getElementById('direction-sub').textContent =
+        new Date().toLocaleTimeString();
+
+      const obsCount = data.obstacle_count ?? '—';
+      document.getElementById('obstacle-count').textContent = obsCount;
+      const dist = data.closest_obstacle_m;
+      document.getElementById('obstacle-dist').textContent =
+        dist != null ? dist + ' m away' : 'Clear path';
+
+      const obsCard = document.getElementById('card-obstacle');
+      obsCard.className = 'card card--obstacle';
+      if (dist != null && parseFloat(dist) < 1.8) obsCard.classList.add('state--danger');
+      else if (dist != null && parseFloat(dist) < 3.5) obsCard.classList.add('state--warn');
+
+      const colored = (v, good) => `<span class="${v === good ? 'ok' : 'warn'}">${v || '—'}</span>`;
+      document.getElementById('sys-camera').innerHTML  = colored(data.camera_status, 'Connected');
+      document.getElementById('sys-model').innerHTML   = colored(data.model_status, 'Free-space ONNX');
+      document.getElementById('sys-server').innerHTML  = colored(data.server_status, 'Active');
+      document.getElementById('sys-fps').textContent   = data.fps ? data.fps + ' fps' : '—';
+
+      // Update camera feed
+      const camImg = document.getElementById('camera-feed');
+      const camOverlay = document.getElementById('camera-overlay-text');
+      const camFpsBadge = document.getElementById('camera-fps-badge');
+
+      if (data.camera_frame) {
+        camImg.src = 'data:image/jpeg;base64,' + data.camera_frame;
+        camImg.classList.remove('hidden');
+        camOverlay.classList.add('hidden');
+        camFpsBadge.textContent = (data.fps ? parseFloat(data.fps).toFixed(1) : '—') + ' FPS';
+      } else {
+        camImg.classList.add('hidden');
+        camOverlay.classList.remove('hidden');
+        camFpsBadge.textContent = '— FPS';
+      }
+    }
+
+    function addAlert(data) {
+      const list = document.getElementById('alerts-list');
+      addAlertRow(data, list);
+      document.getElementById('alerts-empty').style.display = 'none';
+      const badge = document.getElementById('alert-count-badge');
+      badge.textContent = parseInt(badge.textContent || '0') + 1;
+    }
+
+    function addAlertRow(data, container) {
+      const level = data.level || (data.alert_type === 'DANGER' ? 'danger' : 'warn');
+      const el = document.createElement('div');
+      el.className = `alert-row alert--${level}`;
+      el.innerHTML = `
+        <div class="alert-event">${data.alert_type || data.event || '—'}</div>
+        <div class="alert-details">${data.reason || data.details || ''}</div>
+        <div class="alert-time">${formatTime(data.timestamp)}</div>
+      `;
+      container.prepend(el);
+    }
+
+    function addLogRow(data, tbody) {
+      const tr = document.createElement('tr');
+      tr.className = `log-row log--${data.level || 'info'}`;
+      tr.setAttribute('data-level', data.level || 'info');
+      tr.innerHTML = `
+        <td class="mono">${formatTime(data.timestamp)}</td>
+        <td>${data.event_type || data.type || '—'}</td>
+        <td><span class="level-badge level--${data.level || 'info'}">${(data.level || 'info').toUpperCase()}</span></td>
+        <td>${data.message || '—'}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+
+    function showDangerBanner(data) {
+      const banner = document.getElementById('danger-banner');
+      banner.classList.remove('hidden');
+      document.getElementById('danger-title').textContent = '⚠️ DANGER — ' + (data.alert_type || data.event || 'Alert');
+      document.getElementById('danger-detail').textContent = data.reason || data.details || '';
+      document.getElementById('danger-time').textContent  = formatTime(data.timestamp);
+      setTimeout(() => banner.classList.add('hidden'), 10000);
+    }
+
+    function setLiveBadge(state, text) {
+      const badge = document.getElementById('live-badge');
+      badge.className = `live-badge live--${state}`;
+      document.getElementById('live-badge-text').textContent = text;
+    }
+
+    function formatTime(ts) {
+      if (!ts) return '—';
+      try { return new Date(ts).toLocaleTimeString(); } catch { return ts; }
+    }
+
+    function timeAgo(ts) {
+      if (!ts) return '—';
+      const sec = Math.round((Date.now() - new Date(ts).getTime()) / 1000);
+      if (sec < 5) return 'just now';
+      if (sec < 60) return sec + 's ago';
+      return Math.round(sec / 60) + 'm ago';
+    }
+
+    // Log filter
+    window.setFilter = function(btn, level) {
+      document.querySelectorAll('.log-filter').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelectorAll('#log-body tr').forEach(tr => {
+        tr.style.display = (level === 'all' || tr.dataset.level === level) ? '' : 'none';
+      });
+    };
+
+    // Clock
+    function tick() {
+      document.getElementById('footer-clock').textContent =
+        new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+    }
+    tick();
+    setInterval(tick, 1000);
+
+    // Update last-updated every 5s
+    setInterval(() => {
+      const el = document.getElementById('last-updated');
+      if (el.dataset.ts) {
+        el.textContent = 'Updated ' + timeAgo(el.dataset.ts);
+      }
+    }, 5000);
+
+  </script>
+
+  <!-- Firebase config (user fills in their keys here) -->
+  <script src="firebase-config.js"></script>
+
+</body>
+</html>

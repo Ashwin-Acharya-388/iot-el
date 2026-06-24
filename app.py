@@ -52,6 +52,13 @@ except Exception as e:
     print(f"[MQTT] Could not import mqtt_client: {e}")
     HAS_MQTT = False
 
+try:
+    import firebase_cloud
+    HAS_FIREBASE = True
+except Exception as e:
+    print(f"[FIREBASE] Could not import firebase_cloud: {e}")
+    HAS_FIREBASE = False
+
 UI_FOLDER = os.path.join(BASE_DIR, 'iot-el', 'dashborad')
 if not os.path.isdir(UI_FOLDER):
     UI_FOLDER = os.path.join(BASE_DIR, 'dashborad')
@@ -74,6 +81,10 @@ if HOST == "127.0.0.1":
 
 app = Flask(__name__, static_folder=UI_FOLDER, template_folder=UI_FOLDER)
 app.secret_key = 'your-secret-key-here'
+
+# ── Initialize Firebase cloud sync ────────────────────────────────────────────
+if HAS_FIREBASE:
+    firebase_cloud.initialize()
 
 # ── User store (persisted to users.json) ─────────────────────────────────────
 USERS_FILE = Path(BASE_DIR) / "config" / "users.json"
@@ -114,6 +125,9 @@ def add_log(event_type: str, message: str, level: str = "info"):
         if len(ACTIVITY_LOG) > 200:
             ACTIVITY_LOG.pop(0)
     print(f"[LOG] [{level.upper()}] [{event_type}] {message}")
+    # Mirror warn/danger entries to Firebase for remote caretaker visibility
+    if HAS_FIREBASE and level in ("warn", "danger"):
+        firebase_cloud.push_log(entry)
 
 # ── Auth routes ───────────────────────────────────────────────────────────────
 @app.route('/login', methods=['GET', 'POST'])
@@ -581,12 +595,23 @@ def run_navigation_loop():
         with frame_lock:
             latest_jpeg_frame = jpeg_bytes
 
+        # Create a compressed low-res JPEG base64 for Firestore to avoid lag and stay within free tier limits
+        firestore_frame = None
+        if HAS_FIREBASE:
+            try:
+                small_vis = cv2.resize(vis, (240, 240))
+                _, small_buffer = cv2.imencode('.jpg', small_vis, [int(cv2.IMWRITE_JPEG_QUALITY), 35])
+                firestore_frame = base64.b64encode(small_buffer).decode('utf-8')
+            except Exception as e:
+                print(f"[FIREBASE] Failed to encode Firestore frame: {e}")
+
         with telemetry_lock:
             latest_telemetry.update({
                 "direction": direction,
                 "fps": round(fps, 1),
                 "obstacle_count": obstacle_count,
                 "obstacles": obstacles[:5],
+                "camera_frame": firestore_frame,
                 "status": {
                     "camera": "Connected" if camera_active else "Simulated",
                     "model": "Free-space ONNX" if model_active else ("Canny Edge" if not is_simulated else "Simulated"),
@@ -594,12 +619,26 @@ def run_navigation_loop():
                 }
             })
 
+        # ── Firebase: push live telemetry (throttled internally) ──────────────
+        if HAS_FIREBASE:
+            with telemetry_lock:
+                telem_snapshot = dict(latest_telemetry)
+            firebase_cloud.push_telemetry(telem_snapshot)
+
         # Voice alerting logic + log
         if voice is not None and obstacle_count > 0 and obstacles[0]['distance'] < 3.5:
             alert_text = f"Obstacle detected. Count of obstacles: {obstacle_count}."
             voice.speak(alert_text)
             level = "danger" if obstacles[0]['distance'] < 1.8 else "warn"
             add_log("NAV", f"DIR={direction} | Obstacles={obstacle_count} | Closest={obstacles[0]['distance']}m", level)
+
+        # ── Firebase: push danger alert when obstacle is critically close ──────
+        if HAS_FIREBASE and obstacle_count > 0 and obstacles[0]['distance'] < 1.8:
+            firebase_cloud.push_alert(
+                event="DANGER_OBSTACLE",
+                details=f"Direction={direction} | Obstacles={obstacle_count} | Closest={obstacles[0]['distance']}m",
+                level="danger"
+            )
 
         # MQTT telemetry logging
         if HAS_MQTT:
@@ -734,6 +773,30 @@ def bt_status():
         return jsonify({'connected': False, 'message': 'bluetoothctl not found (Windows?)'})
     except Exception as e:
         return jsonify({'connected': False, 'message': str(e)})
+
+
+def run_health_loop():
+    import psutil
+    
+    def get_cpu_temp():
+        try:
+            # Standard RPi path
+            with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+                return round(float(f.read().strip()) / 1000.0, 1)
+        except Exception:
+            return 45.0  # Safe test default
+            
+    print("[SERVER] Starting Device Health MQTT Publisher Loop...")
+    while not shutdown_event.is_set():
+        if HAS_MQTT:
+            try:
+                temp = get_cpu_temp()
+                cpu = psutil.cpu_percent()
+                mem = psutil.virtual_memory().percent
+                mqtt_client.publish_health(temp, cpu, mem)
+            except Exception as e:
+                pass
+        time.sleep(3.0)  # Publish every 3 seconds
 
 
 @atexit.register

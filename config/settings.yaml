@@ -9,3 +9,13 @@ mqtt:
 dashboard:
   host: "127.0.0.1"
   port: 5500
+
+firebase:
+  # Path to your downloaded service account JSON file
+  credentials: "firebase-service-account.json"
+  # How often (seconds) live telemetry is pushed to Firestore
+  telemetry_interval_sec: 5
+  # Firestore collection names (no need to change unless you want custom names)
+  collection_telemetry: "telemetry"
+  collection_alerts: "alerts"
+  collection_logs: "activity_logs"

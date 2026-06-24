@@ -12,3 +12,6 @@ gtFine_trainvaltest/
 models/
 runs/
 venv/
+
+# Firebase — secret key (NEVER commit this)
+firebase-service-account.json
