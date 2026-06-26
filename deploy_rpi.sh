@@ -15,4 +15,4 @@ rsync -av --delete \
   --exclude 'audio/*.wav' \
   . "${RPI_HOST}:${TARGET_DIR}/"
 
-ssh "${RPI_HOST}" "cd ${TARGET_DIR} && ( ./venv/bin/python -c 'import sys' 2>/dev/null || ( echo 'Recreating broken virtual environment...' && rm -rf venv && python3 -m venv venv ) ) && ./venv/bin/pip install flask numpy opencv-python-headless onnxruntime pyttsx3 pygame gTTS psutil PyYAML paho-mqtt --extra-index-url https://www.piwheels.org/simple && CAMERA_INDEX='${CAMERA_INDEX}' CAMERA_DEVICE='${CAMERA_DEVICE}' ./venv/bin/python stream_server.py"
+ssh "${RPI_HOST}" "cd ${TARGET_DIR} && ( ./venv/bin/python -c 'import sys' 2>/dev/null || ( echo 'Recreating broken virtual environment...' && rm -rf venv && python3 -m venv venv ) ) && ./venv/bin/pip install flask numpy opencv-python-headless onnxruntime pyttsx3 pygame gTTS psutil PyYAML paho-mqtt firebase-admin --extra-index-url https://www.piwheels.org/simple && nohup python3 -m http.server 8000 -d caretaker-portal > portal.log 2>&1 & CAMERA_INDEX='${CAMERA_INDEX}' CAMERA_DEVICE='${CAMERA_DEVICE}' ./venv/bin/python app.py"

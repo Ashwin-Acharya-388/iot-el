@@ -32,13 +32,20 @@ CREDENTIALS_FILE = os.getenv(
 )
 
 # Firestore collection / document names (match your manual schema)
-COLLECTION_LIVE    = "live_status"     # Collection ID
-DOCUMENT_USER      = "user1"           # Document ID inside live_status
+COLLECTION_LIVE    = "telemetry"       # Collection ID
+DOCUMENT_USER      = "live"            # Document ID inside live_status
 COLLECTION_ALERTS  = "alerts"          # alerts collection
-COLLECTION_HISTORY = "history"         # history / activity log collection
+COLLECTION_HISTORY = "activity_logs"   # history / activity log collection
 
-# Throttle: push telemetry at most once every N seconds
-TELEMETRY_MIN_INTERVAL = 5.0
+import yaml
+
+# Read settings to get telemetry_interval_sec
+try:
+    with open(BASE_DIR / "config" / "settings.yaml", "r") as f:
+        _cfg = yaml.safe_load(f)
+        TELEMETRY_MIN_INTERVAL = float(_cfg.get("firebase", {}).get("telemetry_interval_sec", 5.0))
+except Exception:
+    TELEMETRY_MIN_INTERVAL = 5.0
 
 # ── Internal state ──────────────────────────────────────────────────────────
 _db              = None

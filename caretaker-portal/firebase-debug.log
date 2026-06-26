@@ -1,0 +1,32 @@
+[debug] [2026-06-24T10:20:55.764Z] ----------------------------------------------------------------------
+[debug] [2026-06-24T10:20:55.767Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\amrut\npm-global\node_modules\firebase-tools\lib\bin\firebase.js deploy
+[debug] [2026-06-24T10:20:55.768Z] CLI Version:   15.22.1
+[debug] [2026-06-24T10:20:55.768Z] Platform:      win32
+[debug] [2026-06-24T10:20:55.768Z] Node Version:  v25.4.0
+[debug] [2026-06-24T10:20:55.768Z] Detected Agent: unknown
+[debug] [2026-06-24T10:20:55.768Z] Time:          Wed Jun 24 2026 15:50:55 GMT+0530 (India Standard Time)
+[debug] [2026-06-24T10:20:55.768Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-06-24T10:20:58.226Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-06-24T10:20:58.227Z] > authorizing via signed-in user (amrutha.cs24@rvce.edu.in)
+[debug] [2026-06-24T10:20:58.227Z] [iam] checking project blind-assist-1bf48 for permissions ["firebase.projects.get","firebasehosting.sites.update"]
+[debug] [2026-06-24T10:20:58.228Z] Checked if tokens are valid: true, expires at: 1782299877119
+[debug] [2026-06-24T10:20:58.228Z] Checked if tokens are valid: true, expires at: 1782299877119
+[debug] [2026-06-24T10:20:58.229Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/blind-assist-1bf48:testIamPermissions [none]
+[debug] [2026-06-24T10:20:58.229Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/blind-assist-1bf48:testIamPermissions  x-goog-user-project=blind-assist-1bf48
+[debug] [2026-06-24T10:20:58.229Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/blind-assist-1bf48:testIamPermissions {"permissions":["firebase.projects.get","firebasehosting.sites.update"]}
+[debug] [2026-06-24T10:20:59.129Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/blind-assist-1bf48:testIamPermissions 403
+[debug] [2026-06-24T10:20:59.129Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/blind-assist-1bf48:testIamPermissions {"error":{"code":403,"message":"Caller does not have required permission to use project blind-assist-1bf48. Grant the caller the roles/serviceusage.serviceUsageConsumer role, or a custom role with the serviceusage.services.use permission, by visiting https://console.developers.google.com/iam-admin/iam?project=blind-assist-1bf48 and then retry. Propagation of the new permission may take a few minutes.","status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"USER_PROJECT_DENIED","domain":"googleapis.com","metadata":{"containerInfo":"blind-assist-1bf48","service":"cloudresourcemanager.googleapis.com","consoleUrl":"https://console.developers.google.com/iam-admin/iam?project=blind-assist-1bf48","consumer":"projects/blind-assist-1bf48"}},{"@type":"type.googleapis.com/google.rpc.LocalizedMessage","locale":"en-US","message":"Caller does not have required permission to use project blind-assist-1bf48. Grant the caller the roles/serviceusage.serviceUsageConsumer role, or a custom role with the serviceusage.services.use permission, by visiting https://console.developers.google.com/iam-admin/iam?project=blind-assist-1bf48 and then retry. Propagation of the new permission may take a few minutes."},{"@type":"type.googleapis.com/google.rpc.Help","links":[{"description":"Google developer console IAM admin","url":"https://console.developers.google.com/iam-admin/iam?project=blind-assist-1bf48"}]}]}}
+[debug] [2026-06-24T10:20:59.129Z] [iam] error while checking permissions, command may fail: Request to https://cloudresourcemanager.googleapis.com/v1/projects/blind-assist-1bf48:testIamPermissions had HTTP Error: 403, Caller does not have required permission to use project blind-assist-1bf48. Grant the caller the roles/serviceusage.serviceUsageConsumer role, or a custom role with the serviceusage.services.use permission, by visiting https://console.developers.google.com/iam-admin/iam?project=blind-assist-1bf48 and then retry. Propagation of the new permission may take a few minutes.
+[debug] [2026-06-24T10:20:59.130Z] Checked if tokens are valid: true, expires at: 1782299877119
+[debug] [2026-06-24T10:20:59.130Z] Checked if tokens are valid: true, expires at: 1782299877119
+[debug] [2026-06-24T10:20:59.130Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/blind-assist-1bf48 [none]
+[debug] [2026-06-24T10:21:02.727Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/blind-assist-1bf48 403
+[debug] [2026-06-24T10:21:02.728Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/blind-assist-1bf48 {"error":{"code":403,"message":"The caller does not have permission","status":"PERMISSION_DENIED"}}
+[debug] [2026-06-24T10:21:02.729Z] Request to https://firebase.googleapis.com/v1beta1/projects/blind-assist-1bf48 had HTTP Error: 403, The caller does not have permission
+[debug] [2026-06-24T10:21:02.877Z] FirebaseError: Request to https://firebase.googleapis.com/v1beta1/projects/blind-assist-1bf48 had HTTP Error: 403, The caller does not have permission
+    at responseToError (C:\Users\amrut\npm-global\node_modules\firebase-tools\lib\responseToError.js:53:12)
+    at RetryOperation._fn (C:\Users\amrut\npm-global\node_modules\firebase-tools\lib\apiv2.js:333:77)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+[error] 
+[error] Error: Failed to get Firebase project blind-assist-1bf48. Please make sure the project exists and your account has permission to access it.

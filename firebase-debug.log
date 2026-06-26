@@ -1,0 +1,56 @@
+[debug] [2026-06-26T10:33:22.739Z] ----------------------------------------------------------------------
+[debug] [2026-06-26T10:33:22.741Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\amrut\npm-global\node_modules\firebase-tools\lib\bin\firebase.js apps:sdkconfig web --project iot-el-9509c
+[debug] [2026-06-26T10:33:22.742Z] CLI Version:   15.22.1
+[debug] [2026-06-26T10:33:22.742Z] Platform:      win32
+[debug] [2026-06-26T10:33:22.742Z] Node Version:  v25.4.0
+[debug] [2026-06-26T10:33:22.742Z] Detected Agent: antigravity
+[debug] [2026-06-26T10:33:22.742Z] Time:          Fri Jun 26 2026 16:03:22 GMT+0530 (India Standard Time)
+[debug] [2026-06-26T10:33:22.742Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-06-26T10:33:22.745Z] >>> [apiv2][query] GET https://firebase-public.firebaseio.com/cli.json [none]
+[debug] [2026-06-26T10:33:22.828Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-06-26T10:33:22.828Z] > authorizing via signed-in user (amrutha.cs24@rvce.edu.in)
+[debug] [2026-06-26T10:33:22.830Z] Checked if tokens are valid: false, expires at: 1782299877119
+[debug] [2026-06-26T10:33:22.830Z] Checked if tokens are valid: false, expires at: 1782299877119
+[debug] [2026-06-26T10:33:22.830Z] > refreshing access token with scopes: []
+[debug] [2026-06-26T10:33:22.832Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-06-26T10:33:22.832Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-06-26T10:33:23.595Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-06-26T10:33:23.596Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-06-26T10:33:23.606Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/iot-el-9509c/webApps pageSize=100
+[debug] [2026-06-26T10:33:24.251Z] <<< [apiv2][status] GET https://firebase-public.firebaseio.com/cli.json 200
+[debug] [2026-06-26T10:33:24.251Z] <<< [apiv2][body] GET https://firebase-public.firebaseio.com/cli.json {"cloudBuildErrorAfter":1594252800000,"cloudBuildWarnAfter":1590019200000,"defaultNode10After":1594252800000,"minVersion":"3.0.5","node8DeploysDisabledAfter":1613390400000,"node8RuntimeDisabledAfter":1615809600000,"node8WarnAfter":1600128000000}
+[debug] [2026-06-26T10:33:24.484Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/iot-el-9509c/webApps 403
+[debug] [2026-06-26T10:33:24.484Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/iot-el-9509c/webApps {"error":{"code":403,"message":"The caller does not have permission","status":"PERMISSION_DENIED"}}
+[debug] [2026-06-26T10:33:24.485Z] Request to https://firebase.googleapis.com/v1beta1/projects/iot-el-9509c/webApps?pageSize=100 had HTTP Error: 403, The caller does not have permission
+[debug] [2026-06-26T10:33:24.922Z] FirebaseError: Request to https://firebase.googleapis.com/v1beta1/projects/iot-el-9509c/webApps?pageSize=100 had HTTP Error: 403, The caller does not have permission
+    at responseToError (C:\Users\amrut\npm-global\node_modules\firebase-tools\lib\responseToError.js:53:12)
+    at RetryOperation._fn (C:\Users\amrut\npm-global\node_modules\firebase-tools\lib\apiv2.js:333:77)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+[error] 
+[error] Error: Failed to list Firebase WEB apps. See firebase-debug.log for more info.
+[debug] [2026-06-26T10:33:50.881Z] ----------------------------------------------------------------------
+[debug] [2026-06-26T10:33:50.883Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\amrut\npm-global\node_modules\firebase-tools\lib\bin\firebase.js apps:create WEB caretaker-portal --project iot-el-9509c
+[debug] [2026-06-26T10:33:50.884Z] CLI Version:   15.22.1
+[debug] [2026-06-26T10:33:50.884Z] Platform:      win32
+[debug] [2026-06-26T10:33:50.884Z] Node Version:  v25.4.0
+[debug] [2026-06-26T10:33:50.884Z] Detected Agent: antigravity
+[debug] [2026-06-26T10:33:50.884Z] Time:          Fri Jun 26 2026 16:03:50 GMT+0530 (India Standard Time)
+[debug] [2026-06-26T10:33:50.884Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-06-26T10:33:50.914Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-06-26T10:33:50.915Z] > authorizing via signed-in user (amrutha.cs24@rvce.edu.in)
+[info] Create your WEB app in project iot-el-9509c:
+[debug] [2026-06-26T10:33:50.920Z] Checked if tokens are valid: true, expires at: 1782473602596
+[debug] [2026-06-26T10:33:50.920Z] Checked if tokens are valid: true, expires at: 1782473602596
+[debug] [2026-06-26T10:33:50.921Z] >>> [apiv2][query] POST https://firebase.googleapis.com/v1beta1/projects/iot-el-9509c/webApps [none]
+[debug] [2026-06-26T10:33:50.921Z] >>> [apiv2][body] POST https://firebase.googleapis.com/v1beta1/projects/iot-el-9509c/webApps {"displayName":"caretaker-portal"}
+[debug] [2026-06-26T10:33:52.045Z] <<< [apiv2][status] POST https://firebase.googleapis.com/v1beta1/projects/iot-el-9509c/webApps 403
+[debug] [2026-06-26T10:33:52.045Z] <<< [apiv2][body] POST https://firebase.googleapis.com/v1beta1/projects/iot-el-9509c/webApps {"error":{"code":403,"message":"The caller does not have permission","status":"PERMISSION_DENIED"}}
+[debug] [2026-06-26T10:33:52.046Z] Request to https://firebase.googleapis.com/v1beta1/projects/iot-el-9509c/webApps had HTTP Error: 403, The caller does not have permission
+[debug] [2026-06-26T10:33:52.276Z] FirebaseError: Request to https://firebase.googleapis.com/v1beta1/projects/iot-el-9509c/webApps had HTTP Error: 403, The caller does not have permission
+    at responseToError (C:\Users\amrut\npm-global\node_modules\firebase-tools\lib\responseToError.js:53:12)
+    at RetryOperation._fn (C:\Users\amrut\npm-global\node_modules\firebase-tools\lib\apiv2.js:333:77)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+[error] 
+[error] Error: Failed to create Web app for project iot-el-9509c. See firebase-debug.log for more info.

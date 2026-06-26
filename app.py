@@ -19,9 +19,7 @@ import cv2
 import atexit
 from pathlib import Path
 from flask import Flask, Response, request, jsonify, send_from_directory
-
-from flask import session, redirect, url_for, request, render_template
-
+from flask import session, redirect, url_for, render_template
 
 # Add parent directory to path to allow importing modules
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -97,7 +95,7 @@ def _load_users():
         except Exception:
             pass
     # Default built-in admin account
-    return {"admin": {"password": "blind2024", "full_name": "Administrator"}}
+    return {"admin": {"password": "123", "full_name": "123"}}
 
 def _save_users(users):
     try:
@@ -182,6 +180,7 @@ def logout():
     add_log("AUTH", f"User '{user}' logged out.", "info")
     session.clear()
     return redirect(url_for('login'))
+    
 voice = VoiceCommands(cooldown=1.2) if VoiceCommands is not None else None
 
 # Shared state between background thread and Flask routes
@@ -202,76 +201,18 @@ frame_lock = threading.Lock()
 shutdown_event = threading.Event()
 
 def open_camera():
-    candidates = []
-    # 1. Try environment variables first
-    cam_dev = os.getenv('CAMERA_DEVICE', '').strip()
-    if cam_dev:
-        candidates.append(cam_dev)
-    
-    # 2. Check for USB camera on Linux (/dev/v4l/by-id/)
-    try:
-        v4l_usb_devices = glob.glob('/dev/v4l/by-id/*usb*')
-        for dev_path in sorted(v4l_usb_devices):
-            try:
-                real_path = os.path.realpath(dev_path)
-                if real_path not in candidates:
-                    candidates.append(real_path)
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    # 3. Add existing Linux video devices
-    existing_video_devices = sorted(glob.glob('/dev/video*'))
-    for dev in existing_video_devices:
-        if dev not in candidates:
-            candidates.append(dev)
-
-    # 4. Try higher indices (USB webcams) before index 0
-    cam_idx = os.getenv('CAMERA_INDEX', '')
-    if cam_idx.isdigit():
-        candidates.append(int(cam_idx))
-    
-    for i in [1, 2, 3, 0, 4, 5]:
-        if i not in candidates:
-            candidates.append(i)
-
-    backend_order = []
-    for name in ('CAP_DSHOW', 'CAP_MSMF', 'CAP_V4L2'):
-        backend = getattr(cv2, name, None)
-        if backend is not None:
-            backend_order.append(backend)
-    if 0 not in backend_order:
-        backend_order.append(0)
-
-    seen = set()
-    for candidate in candidates:
-        key = candidate if isinstance(candidate, str) else f'index:{candidate}'
-        if key in seen:
-            continue
-        seen.add(key)
-
-        for backend in backend_order:
-            try:
-                if isinstance(candidate, str) and not candidate.isdigit():
-                    cap = cv2.VideoCapture(candidate, backend)
-                else:
-                    cap = cv2.VideoCapture(int(candidate), backend)
-                if cap.isOpened():
-                    # Set RPi-optimized capture resolution
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
-                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    
-                    ok, _ = cap.read()
-                    if ok:
-                        print(f"[CAMERA] Using camera source: {candidate} (backend={backend})")
-                        return cap
-                cap.release()
-            except Exception as exc:
-                print(f"[CAMERA] Failed candidate {candidate} backend {backend}: {exc}")
-
-    print("[CAMERA] No working camera device found.")
+    print("[CAMERA] Attempting to connect to local webcam...")
+    for index in [0, 1, '/dev/video0', '/dev/video1']:
+        try:
+            cap = cv2.VideoCapture(index)
+            if cap.isOpened():
+                print(f"[CAMERA] ✓ Successfully connected to local webcam (index={index})!")
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
+                return cap
+        except Exception:
+            pass
+    print("[CAMERA] ⚠ Local webcam could not be opened. Falling back to simulation.")
     return None
 
 def detect_obstacles_canny(frame):
@@ -339,10 +280,10 @@ def make_synthetic_frame(t):
     # Simulated moving obstacle (e.g., a moving person)
     cx = int(160 + 70 * np.sin(t))
     cy = int(220 + 15 * np.cos(t * 0.7))
-    cv2.rectangle(frame, (cx - 15, cy - 35), (cx + 15, cy + 10), [50, 50, 200], -1) # Red-ish obstacle
+    cv2.rectangle(frame, (cx - 15, cy - 35), (cx + 15, cy + 10), [50, 50, 200], -1)
     
     # Simulated static obstacle (e.g., roadside post)
-    cv2.rectangle(frame, (50, 160), (70, 230), [50, 150, 50], -1) # Green-ish post
+    cv2.rectangle(frame, (50, 160), (70, 230), [50, 150, 50], -1)
     
     # Add minor noise
     noise = np.random.normal(0, 3, frame.shape).astype(np.int16)
@@ -360,7 +301,6 @@ def run_navigation_loop():
     # 2. Initialize ONNX Inference Engine
     model_active = False
     engine = None
-    tracker = None
     smoother = None
     voter = None
 
@@ -421,7 +361,6 @@ def run_navigation_loop():
         obstacle_count = 0
         smoothed_mask = None
 
-        # Case A: Free-space segmentation model is active (runs on real or synthetic frames)
         if model_active and engine is not None:
             try:
                 tensor = engine.preprocess(frame)
@@ -432,7 +371,6 @@ def run_navigation_loop():
                 
                 walkable_pct = float(zone_info.get('total_free', 0.0)) * 100.0
                 
-                # Detect contours from the non-walkable regions to identify obstacles
                 obs_mask = (smoothed_mask == 0).astype(np.uint8) * 255
                 obs_mask_bottom = np.zeros_like(obs_mask)
                 obs_mask_bottom[160:, :] = obs_mask[160:, :]
@@ -466,7 +404,6 @@ def run_navigation_loop():
                 obstacles = sorted(obstacles, key=lambda item: item['distance'])
                 obstacle_count = len(obstacles)
                 
-                # Fallback list if no obstacles are found in the mask
                 if not obstacles:
                     obstacles = [
                         {
@@ -484,9 +421,7 @@ def run_navigation_loop():
                 print(f"[BACKEND] Free-space inference error: {ex}")
                 direction, obstacles, obstacle_count = detect_obstacles_canny(frame)
         else:
-            # Case B: Canny Edge / Simulation mode (when model is inactive)
             if is_simulated:
-                # Generate simulated moving obstacles on HUD
                 sim_t += 0.05
                 cy1 = 0.65 + 0.25 * np.sin(sim_t)
                 cx1 = 0.25 + 0.05 * np.cos(sim_t)
@@ -504,7 +439,6 @@ def run_navigation_loop():
                 y2_min = int((cy2 - h2/2) * 320)
                 y2_max = int((cy2 + h2/2) * 320)
 
-                # Simulated distances
                 dist1 = max(0.5, 8.0 - (cy1 * 8.0))
                 dist2 = max(0.5, 8.0 - (cy2 * 8.0))
 
@@ -535,17 +469,12 @@ def run_navigation_loop():
                 else:
                     direction = "FORWARD"
             else:
-                # Camera online but no YOLO: Run Canny
                 direction, obstacles, obstacle_count = detect_obstacles_canny(frame)
 
-        # Draw boxes and direction on the frame
         vis = frame.copy()
-        
-        # Resize visual copy to 320x320 if not already
         if vis.shape[0] != 320 or vis.shape[1] != 320:
             vis = cv2.resize(vis, (320, 320))
 
-        # Apply model-based green/red overlays
         if model_active and smoothed_mask is not None:
             mask_resized = cv2.resize(smoothed_mask, (320, 320), interpolation=cv2.INTER_NEAREST)
             walkable = mask_resized > 0
@@ -557,7 +486,6 @@ def run_navigation_loop():
             nw_bottom = non_walkable & bottom_half_mask
             vis[nw_bottom] = (vis[nw_bottom] * 0.8 + np.array([0, 0, 180], dtype=np.uint8) * 0.2).astype(np.uint8)
 
-        # Draw Left, Center, Right zone dividers on HUD
         cv2.line(vis, (int(320 * 0.33), 0), (int(320 * 0.33), 320), (50, 50, 100), 1)
         cv2.line(vis, (int(320 * 0.67), 0), (int(320 * 0.67), 320), (50, 50, 100), 1)
 
@@ -568,39 +496,34 @@ def run_navigation_loop():
             lbl = obs['label']
             dst = obs['distance']
             if dst < 2.0:
-                color = (0, 0, 255)  # Red
+                color = (0, 0, 255)
             elif dst < 3.5:
-                color = (0, 255, 255)  # Yellow
+                color = (0, 255, 255)
             else:
-                color = (0, 255, 0)  # Green
+                color = (0, 255, 0)
             cv2.rectangle(vis, (x, y), (x + w, y + h), color, 2)
             cv2.putText(vis, f"{lbl} {dst:.1f}m", (x, max(15, y - 5)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
 
-        # Draw navigation direction at top left
         cv2.putText(vis, f"DIR: {direction}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
 
-        # Calculate FPS
         t_end = time.perf_counter()
         frame_times.append(t_end - t_start)
         if len(frame_times) > 30:
             frame_times.pop(0)
         fps = 1.0 / np.mean(frame_times) if frame_times else 0.0
 
-        # Encode frame to JPEG
         _, buffer = cv2.imencode('.jpg', vis)
         jpeg_bytes = buffer.tobytes()
 
-        # Update globals safely
         with frame_lock:
             latest_jpeg_frame = jpeg_bytes
 
-        # Create a compressed low-res JPEG base64 for Firestore to avoid lag and stay within free tier limits
         firestore_frame = None
         if HAS_FIREBASE:
             try:
-                small_vis = cv2.resize(vis, (240, 240))
-                _, small_buffer = cv2.imencode('.jpg', small_vis, [int(cv2.IMWRITE_JPEG_QUALITY), 35])
+                small_vis = cv2.resize(vis, (160, 160))
+                _, small_buffer = cv2.imencode('.jpg', small_vis, [int(cv2.IMWRITE_JPEG_QUALITY), 25])
                 firestore_frame = base64.b64encode(small_buffer).decode('utf-8')
             except Exception as e:
                 print(f"[FIREBASE] Failed to encode Firestore frame: {e}")
@@ -619,31 +542,27 @@ def run_navigation_loop():
                 }
             })
 
-        # ── Firebase: push live telemetry (throttled internally) ──────────────
         if HAS_FIREBASE:
             with telemetry_lock:
                 telem_snapshot = dict(latest_telemetry)
             firebase_cloud.push_telemetry(telem_snapshot)
 
-        # Voice alerting logic + log
         if voice is not None and obstacle_count > 0 and obstacles[0]['distance'] < 3.5:
             alert_text = f"Obstacle detected. Count of obstacles: {obstacle_count}."
             voice.speak(alert_text)
             level = "danger" if obstacles[0]['distance'] < 1.8 else "warn"
             add_log("NAV", f"DIR={direction} | Obstacles={obstacle_count} | Closest={obstacles[0]['distance']}m", level)
 
-        # ── Firebase: push danger alert when obstacle is critically close ──────
         if HAS_FIREBASE and obstacle_count > 0 and obstacles[0]['distance'] < 1.8:
             firebase_cloud.push_alert(
-                event="DANGER_OBSTACLE",
-                details=f"Direction={direction} | Obstacles={obstacle_count} | Closest={obstacles[0]['distance']}m",
-                level="danger"
-            )
+    alert_type="DANGER_OBSTACLE",
+    free_ratio=0.0,  # Pass a numeric float here
+    reason=f"Direction={direction} | Obstacles={obstacle_count} | Closest={obstacles[0]['distance']}m"
+)
 
-        # MQTT telemetry logging
+
         if HAS_MQTT:
             try:
-                # Publish status (e.g. STOP, FORWARD)
                 threading.Thread(
                     target=mqtt_client.publish_status,
                     args=(direction,),
@@ -660,11 +579,9 @@ def run_navigation_loop():
             except Exception:
                 pass
 
-        # Throttle loop to ~10 FPS (100ms) to prevent Pi CPU pinning
         sleep_time = max(0.01, 0.10 - (time.perf_counter() - t_start))
         time.sleep(sleep_time)
 
-    # Release camera on exit
     if camera_active:
         cap.release()
     print("[BACKEND] Navigation loop shutdown completed.")
@@ -677,7 +594,6 @@ def index():
 
 @app.route('/<path:path>')
 def serve_static(path):
-    """Serves static files (style.css, script.js)."""
     return send_from_directory(UI_FOLDER, path)
 
 @app.route('/favicon.ico')
@@ -686,7 +602,6 @@ def favicon():
 
 @app.route('/video')
 def video_feed():
-    """Streams the latest JPEG frame from memory as MJPEG."""
     def generate():
         while True:
             with frame_lock:
@@ -694,18 +609,16 @@ def video_feed():
             if frame_bytes is not None:
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            time.sleep(0.06)  # Stream at ~16 FPS
+            time.sleep(0.06)
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/api/telemetry')
 def telemetry():
-    """Returns real-time telemetry JSON."""
     with telemetry_lock:
         return jsonify(latest_telemetry)
 
 @app.route('/api/mqtt-config')
 def mqtt_config():
-    """Exposes MQTT broker configurations dynamically."""
     if HAS_MQTT:
         return jsonify({
             "broker": mqtt_client.BROKER,
@@ -725,10 +638,8 @@ def mqtt_config():
             "health_topic": "iot/navigation/health"
         })
 
-
 @app.route('/speak')
 def speak():
-    """Receives navigation text and triggers TTS playback."""
     text = request.args.get('text', '').strip()
     if not text:
         return "No text provided", 400
@@ -740,7 +651,6 @@ def speak():
 
 @app.route('/api/logs')
 def get_logs():
-    """Returns the last N activity log entries as JSON."""
     limit = min(int(request.args.get('limit', 50)), 200)
     with LOG_LOCK:
         entries = list(reversed(ACTIVITY_LOG[-limit:]))
@@ -748,43 +658,38 @@ def get_logs():
 
 @app.route('/api/bt-status')
 def bt_status():
-    """Returns Bluetooth audio device connection status (Linux/RPi only)."""
     import subprocess
     try:
-        # List connected devices via bluetoothctl
-        result = subprocess.run(
-            ['bluetoothctl', 'info'],
-            capture_output=True, text=True, timeout=3
-        )
-        output = result.stdout
-        if 'Connected: yes' in output:
-            # Extract device name
-            name = 'Bluetooth Device'
-            for line in output.splitlines():
-                line = line.strip()
-                if line.startswith('Name:'):
+        # Check for the Hardware USB Bluetooth Transmitter via PipeWire
+        wp_res = subprocess.run(['wpctl', 'status'], capture_output=True, text=True, timeout=3)
+        if 'USB2.0 Device' in wp_res.stdout or 'Bluetooth' in wp_res.stdout:
+            add_log("BT", "Hardware Bluetooth Audio Transmitter connected", "info")
+            return jsonify({'connected': True, 'device': 'Hardware BT Transmitter (USB)'})
+            
+        # Fallback to standard native bluetooth
+        bt_res = subprocess.run(['bluetoothctl', 'info'], capture_output=True, text=True, timeout=3)
+        if 'Connected: yes' in bt_res.stdout:
+            name = 'Native Bluetooth Device'
+            for line in bt_res.stdout.splitlines():
+                if line.strip().startswith('Name:'):
                     name = line.split('Name:', 1)[1].strip()
                     break
-            add_log("BT", f"Bluetooth device connected: {name}", "info")
+            add_log("BT", f"Native Bluetooth connected: {name}", "info")
             return jsonify({'connected': True, 'device': name})
-        else:
-            return jsonify({'connected': False, 'message': 'No device connected'})
-    except FileNotFoundError:
-        return jsonify({'connected': False, 'message': 'bluetoothctl not found (Windows?)'})
+            
+        return jsonify({'connected': False, 'message': 'No device connected'})
     except Exception as e:
         return jsonify({'connected': False, 'message': str(e)})
-
 
 def run_health_loop():
     import psutil
     
     def get_cpu_temp():
         try:
-            # Standard RPi path
             with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
                 return round(float(f.read().strip()) / 1000.0, 1)
         except Exception:
-            return 45.0  # Safe test default
+            return 45.0
             
     print("[SERVER] Starting Device Health MQTT Publisher Loop...")
     while not shutdown_event.is_set():
@@ -796,19 +701,16 @@ def run_health_loop():
                 mqtt_client.publish_health(temp, cpu, mem)
             except Exception as e:
                 pass
-        time.sleep(3.0)  # Publish every 3 seconds
-
+        time.sleep(3.0)
 
 @atexit.register
 def cleanup():
     shutdown_event.set()
 
 if __name__ == '__main__':
-    # Start the navigation background thread
     nav_thread = threading.Thread(target=run_navigation_loop, daemon=True)
     nav_thread.start()
 
-    # Start the health reporting thread
     health_thread = threading.Thread(target=run_health_loop, daemon=True)
     health_thread.start()
 

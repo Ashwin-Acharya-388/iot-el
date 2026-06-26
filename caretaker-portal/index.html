@@ -27,6 +27,11 @@
           <div class="brand-sub">Caretaker Remote Portal</div>
         </div>
       </div>
+      
+      <div class="nav-menu">
+        <button class="nav-btn active" id="nav-btn-dashboard" onclick="switchTab('dashboard')">🏠 Dashboard</button>
+        <button class="nav-btn" id="nav-btn-logs" onclick="switchTab('logs')">📋 Activity Logs</button>
+      </div>
 
       <div class="header-status">
         <div class="live-badge" id="live-badge">
@@ -47,8 +52,9 @@
     </div>
   </div>
 
-  <!-- ══════════════════ MAIN GRID ══════════════════ -->
-  <main class="main-grid">
+  <!-- ══════════════════ DASHBOARD TAB ══════════════════ -->
+  <div id="tab-dashboard" class="tab-content active">
+    <main class="main-grid">
 
     <!-- ── ROW 1: Status Cards ── -->
     <section class="cards-row">
@@ -144,14 +150,19 @@
         </div>
       </div>
 
-      <!-- Activity Log -->
-      <div class="panel panel--logs">
+    </main>
+  </div>
+
+  <!-- ══════════════════ LOGS TAB ══════════════════ -->
+  <div id="tab-logs" class="tab-content" style="display: none;">
+    <main class="logs-page">
+      <div class="panel panel--logs full-page-logs">
         <div class="panel-header">
-          <h2 class="panel-title">📋 Activity Log</h2>
+          <h2 class="panel-title">📋 Full Activity Log History</h2>
           <div class="log-filters">
             <button class="log-filter active" onclick="setFilter(this,'all')" data-filter="all">All</button>
-            <button class="log-filter" onclick="setFilter(this,'warn')" data-filter="warn">Warn</button>
-            <button class="log-filter" onclick="setFilter(this,'danger')" data-filter="danger">Danger</button>
+            <button class="log-filter" onclick="setFilter(this,'warn')" data-filter="warn">Warnings</button>
+            <button class="log-filter" onclick="setFilter(this,'danger')" data-filter="danger">Danger Alerts</button>
           </div>
         </div>
         <div class="log-scroll" id="log-scroll">
@@ -172,10 +183,8 @@
           </table>
         </div>
       </div>
-
-    </section>
-
-  </main>
+    </main>
+  </div>
 
   <!-- ══════════════════ FOOTER ══════════════════ -->
   <footer class="footer">
@@ -509,6 +518,15 @@
       document.querySelectorAll('#log-body tr').forEach(tr => {
         tr.style.display = (level === 'all' || tr.dataset.level === level) ? '' : 'none';
       });
+    };
+
+    // ── Tab Navigation ────────────────────────────────────────────────────────
+    window.switchTab = function(tabId) {
+      document.getElementById('tab-dashboard').style.display = tabId === 'dashboard' ? 'block' : 'none';
+      document.getElementById('tab-logs').style.display = tabId === 'logs' ? 'block' : 'none';
+      
+      document.getElementById('nav-btn-dashboard').classList.toggle('active', tabId === 'dashboard');
+      document.getElementById('nav-btn-logs').classList.toggle('active', tabId === 'logs');
     };
 
     // Clock
