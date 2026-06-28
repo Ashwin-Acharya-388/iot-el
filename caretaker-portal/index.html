@@ -302,16 +302,17 @@
         const obs = Math.floor(Math.random() * 4);
         const dist = (Math.random() * 3 + 0.5).toFixed(1);
         const frameBase64 = generateDemoFrame(dir, obs, obs > 0 ? dist : null);
+        const demoFps = (Math.random() * 5 + 6).toFixed(1);
         updateTelemetry({
           direction: dir,
-          fps: (Math.random() * 5 + 6).toFixed(1),
+          fps: demoFps,
           obstacle_count: obs,
           closest_obstacle_m: obs > 0 ? dist : null,
-          camera_frame: frameBase64,
           camera_status: 'Connected',
           model_status: 'Free-space ONNX',
           server_status: 'Active',
         });
+        updateCameraFrame(frameBase64, demoFps);
       }, 2000);
 
       // Fake demo alerts
@@ -326,16 +327,14 @@
 
       setLiveBadge('connecting', 'Connecting…');
 
-      // 1. Real-time telemetry listener (document)
+      // 1. Real-time telemetry listener (direction, obstacles, status)
       const liveDocRef = fb.doc(db, 'telemetry', 'live');
       fb.onSnapshot(liveDocRef, (snap) => {
         if (snap.exists()) {
           setLiveBadge('live', 'LIVE');
           updateTelemetry(snap.data());
           const timestampStr = snap.data().last_updated || snap.data().timestamp;
-          document.getElementById('last-updated').textContent =
-            'Updated ' + timeAgo(timestampStr);
-          document.getElementById('last-updated').dataset.ts = timestampStr;
+          updateLastUpdated(timestampStr);
         } else {
           setLiveBadge('offline', 'No Data Yet');
         }
@@ -344,7 +343,22 @@
         setLiveBadge('offline', 'Connection Error');
       });
 
-      // 2. Real-time alerts listener (last 50, newest first)
+      // 2. Fast camera frame listener (separate document, ~5 FPS)
+      const frameDocRef = fb.doc(db, 'telemetry', 'camera_frame');
+      fb.onSnapshot(frameDocRef, (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          setLiveBadge('live', 'LIVE');
+          updateCameraFrame(data.frame, data.fps);
+          if (data.timestamp) {
+            updateLastUpdated(data.timestamp);
+          }
+        }
+      }, (err) => {
+        console.error('Frame listener error:', err);
+      });
+
+      // 3. Real-time alerts listener (last 50, newest first)
       const alertsQuery = fb.query(
         fb.collection(db, 'alerts'),
         fb.orderBy('timestamp', 'desc'),
@@ -379,7 +393,7 @@
         }
       });
 
-      // 3. Activity log listener (last 100 warn/danger entries)
+      // 4. Activity log listener (last 100 warn/danger entries)
       const logsQuery = fb.query(
         fb.collection(db, 'activity_logs'),
         fb.orderBy('timestamp', 'desc'),
@@ -432,22 +446,36 @@
       document.getElementById('sys-model').innerHTML   = colored(data.model_status, 'Free-space ONNX');
       document.getElementById('sys-server').innerHTML  = colored(data.server_status, 'Active');
       document.getElementById('sys-fps').textContent   = data.fps ? data.fps + ' fps' : '—';
+    }
 
-      // Update camera feed
+    // Fast camera frame updater with Image() preloading to prevent flicker
+    function updateCameraFrame(base64Frame, fps) {
       const camImg = document.getElementById('camera-feed');
       const camOverlay = document.getElementById('camera-overlay-text');
       const camFpsBadge = document.getElementById('camera-fps-badge');
 
-      if (data.camera_frame) {
-        camImg.src = 'data:image/jpeg;base64,' + data.camera_frame;
-        camImg.classList.remove('hidden');
-        camOverlay.classList.add('hidden');
-        camFpsBadge.textContent = (data.fps ? parseFloat(data.fps).toFixed(1) : '—') + ' FPS';
+      if (base64Frame) {
+        // Preload: decode off-screen, then swap into visible element
+        const preload = new Image();
+        preload.onload = function() {
+          camImg.src = preload.src;
+          camImg.classList.remove('hidden');
+          camOverlay.classList.add('hidden');
+        };
+        preload.src = 'data:image/jpeg;base64,' + base64Frame;
+        camFpsBadge.textContent = (fps ? parseFloat(fps).toFixed(1) : '—') + ' FPS';
       } else {
         camImg.classList.add('hidden');
         camOverlay.classList.remove('hidden');
         camFpsBadge.textContent = '— FPS';
       }
+    }
+
+    function updateLastUpdated(timestampStr) {
+      if (!timestampStr) return;
+      const el = document.getElementById('last-updated');
+      el.textContent = 'Updated ' + timeAgo(timestampStr);
+      el.dataset.ts = timestampStr;
     }
 
     function addAlert(data) {

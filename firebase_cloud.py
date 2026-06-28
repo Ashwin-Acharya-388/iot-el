@@ -44,14 +44,21 @@ try:
     with open(BASE_DIR / "config" / "settings.yaml", "r") as f:
         _cfg = yaml.safe_load(f)
         TELEMETRY_MIN_INTERVAL = float(_cfg.get("firebase", {}).get("telemetry_interval_sec", 5.0))
+        FRAME_MIN_INTERVAL = float(_cfg.get("firebase", {}).get("frame_interval_sec", 0.2))
 except Exception:
     TELEMETRY_MIN_INTERVAL = 5.0
+    FRAME_MIN_INTERVAL = 0.2
+
+# Separate Firestore document for fast camera frame streaming
+DOCUMENT_FRAME = "camera_frame"
 
 # ── Internal state ──────────────────────────────────────────────────────────
 _db              = None
 _initialized     = False
 _last_telem_push = 0.0
+_last_frame_push = 0.0
 _push_lock       = threading.Lock()
+_frame_lock      = threading.Lock()
 
 
 def _utc_now() -> str:
@@ -159,7 +166,7 @@ def push_telemetry(telemetry: dict) -> None:
         "camera_status":     telemetry.get("status", {}).get("camera", "Unknown"),
         "model_status":      telemetry.get("status", {}).get("model", "Unknown"),
         "closest_obstacle_m": closest,
-        "camera_frame":      telemetry.get("camera_frame"),
+        "server_status":     telemetry.get("status", {}).get("server", "Active"),
     }
 
     threading.Thread(target=_write_live, args=(payload,), daemon=True).start()
@@ -222,7 +229,38 @@ def push_log(entry: dict) -> None:
     threading.Thread(target=_write_history, args=(payload,), daemon=True).start()
 
 
+def push_frame(base64_frame: str, fps: float = 0.0) -> None:
+    """
+    Push a camera frame to a separate Firestore document for fast streaming.
+    Throttled independently from telemetry at FRAME_MIN_INTERVAL.
+    """
+    global _last_frame_push
+
+    if _db is None or not base64_frame:
+        return
+
+    now = time.time()
+    with _frame_lock:
+        if now - _last_frame_push < FRAME_MIN_INTERVAL:
+            return
+        _last_frame_push = now
+
+    payload = {
+        "frame": base64_frame,
+        "fps": round(float(fps), 1),
+        "timestamp": _utc_now(),
+    }
+    threading.Thread(target=_write_frame, args=(payload,), daemon=True).start()
+
+
 # ── Internal write helpers ───────────────────────────────────────────────────
+
+def _write_frame(payload: dict) -> None:
+    try:
+        _db.collection(COLLECTION_LIVE).document(DOCUMENT_FRAME).set(payload)
+    except Exception as exc:
+        print(f"[FIREBASE] Frame push error: {exc}")
+
 
 def _write_live(payload: dict) -> None:
     try:

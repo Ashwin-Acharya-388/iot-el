@@ -15,6 +15,8 @@ firebase:
   credentials: "firebase-service-account.json"
   # How often (seconds) live telemetry is pushed to Firestore
   telemetry_interval_sec: 0.3
+  # How often (seconds) camera frames are pushed (separate from telemetry)
+  frame_interval_sec: 0.2
   # Firestore collection names (no need to change unless you want custom names)
   collection_telemetry: "telemetry"
   collection_alerts: "alerts"

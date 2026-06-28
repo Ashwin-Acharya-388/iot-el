@@ -209,6 +209,8 @@ def open_camera():
                 print(f"[CAMERA] ✓ Successfully connected to local webcam (index={index})!")
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # Always grab latest frame
+                cap.set(cv2.CAP_PROP_FPS, 30)          # Request 30 FPS from camera
                 return cap
         except Exception:
             pass
@@ -340,7 +342,9 @@ def run_navigation_loop():
         frame = None
 
         if camera_active:
-            ret, frame = cap.read()
+            # Grab+retrieve pattern to always get the latest frame
+            cap.grab()
+            ret, frame = cap.retrieve()
             if not ret:
                 print("[BACKEND] ⚠ Camera read failed. Releasing camera.")
                 camera_active = False
@@ -522,8 +526,8 @@ def run_navigation_loop():
         firestore_frame = None
         if HAS_FIREBASE:
             try:
-                small_vis = cv2.resize(vis, (160, 160))
-                _, small_buffer = cv2.imencode('.jpg', small_vis, [int(cv2.IMWRITE_JPEG_QUALITY), 25])
+                small_vis = cv2.resize(vis, (240, 240))
+                _, small_buffer = cv2.imencode('.jpg', small_vis, [int(cv2.IMWRITE_JPEG_QUALITY), 40])
                 firestore_frame = base64.b64encode(small_buffer).decode('utf-8')
             except Exception as e:
                 print(f"[FIREBASE] Failed to encode Firestore frame: {e}")
@@ -534,7 +538,6 @@ def run_navigation_loop():
                 "fps": round(fps, 1),
                 "obstacle_count": obstacle_count,
                 "obstacles": obstacles[:5],
-                "camera_frame": firestore_frame,
                 "status": {
                     "camera": "Connected" if camera_active else "Simulated",
                     "model": "Free-space ONNX" if model_active else ("Canny Edge" if not is_simulated else "Simulated"),
@@ -542,7 +545,12 @@ def run_navigation_loop():
                 }
             })
 
+        # Push frame and telemetry to Firebase independently
         if HAS_FIREBASE:
+            # Fast frame push (separate document, ~5 FPS)
+            if firestore_frame:
+                firebase_cloud.push_frame(firestore_frame, fps=fps)
+            # Slower telemetry push (direction, obstacles, status)
             with telemetry_lock:
                 telem_snapshot = dict(latest_telemetry)
             firebase_cloud.push_telemetry(telem_snapshot)
@@ -579,7 +587,8 @@ def run_navigation_loop():
             except Exception:
                 pass
 
-        sleep_time = max(0.01, 0.10 - (time.perf_counter() - t_start))
+        # Throttle loop to ~30 FPS (33ms) for smooth streaming
+        sleep_time = max(0.005, 0.033 - (time.perf_counter() - t_start))
         time.sleep(sleep_time)
 
     if camera_active:
