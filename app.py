@@ -1,4 +1,5 @@
 import glob
+import collections
 import os
 import sys
 import io
@@ -26,10 +27,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
 
 try:
-    from voice_commands import VoiceCommands
+    from voice_commands import VoiceCommands, float_to_words
 except Exception as e:
     print(f"[AUDIO] Could not import VoiceCommands: {e}")
     VoiceCommands = None
+    float_to_words = lambda x: str(x)
+
 
 try:
     from navigation_freespace_rpi import (
@@ -57,9 +60,11 @@ except Exception as e:
     print(f"[FIREBASE] Could not import firebase_cloud: {e}")
     HAS_FIREBASE = False
 
-UI_FOLDER = os.path.join(BASE_DIR, 'iot-el', 'dashborad')
+# Always serve the canonical dashborad/ folder.
+# The iot-el/dashborad sub-folder is an old duplicate — never use it.
+UI_FOLDER = os.path.join(BASE_DIR, 'dashborad')
 if not os.path.isdir(UI_FOLDER):
-    UI_FOLDER = os.path.join(BASE_DIR, 'dashborad')
+    UI_FOLDER = os.path.join(BASE_DIR, 'iot-el', 'dashborad')
 
 # Load settings from settings.yaml
 CONFIG_PATH = Path(BASE_DIR) / "config" / "settings.yaml"
@@ -200,19 +205,39 @@ telemetry_lock = threading.Lock()
 frame_lock = threading.Lock()
 shutdown_event = threading.Event()
 
+# Metrics tracking
+cam_fps = 0.0
+inf_fps = 0.0
+avg_inference_time = 0.0
+stream_frame_count = 0
+stream_latencies = collections.deque(maxlen=30)
+stream_lock = threading.Lock()
+
 def open_camera():
     print("[CAMERA] Attempting to connect to local webcam...")
     for index in [0, 1, '/dev/video0', '/dev/video1']:
         try:
-            cap = cv2.VideoCapture(index)
+            # Force V4L2 backend on Linux for stability
+            cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
             if cap.isOpened():
                 print(f"[CAMERA] ✓ Successfully connected to local webcam (index={index})!")
+                # Configure resolution and buffer size once
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 320)
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # Always grab latest frame
-                cap.set(cv2.CAP_PROP_FPS, 30)          # Request 30 FPS from camera
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                
+                # Warm up the camera: read a few frames to let the sensor initialize
+                for _ in range(5):
+                    ret, _ = cap.read()
+                    if ret:
+                        print("[CAMERA] ✓ Camera warm-up successful. Reading frames...")
+                        return cap
+                    time.sleep(0.1)
+                
+                # If warm-up failed, try returning it anyway
                 return cap
-        except Exception:
+        except Exception as e:
+            print(f"[CAMERA] Try failed for index {index}: {e}")
             pass
     print("[CAMERA] ⚠ Local webcam could not be opened. Falling back to simulation.")
     return None
@@ -292,308 +317,363 @@ def make_synthetic_frame(t):
     frame = np.clip(frame.astype(np.int16) + noise, 0, 255).astype(np.uint8)
     return frame
 
-def run_navigation_loop():
-    global latest_jpeg_frame, latest_telemetry
-    print("\n[BACKEND] Starting Navigation and Video Stream Loop...")
-
-    # 1. Initialize Camera
-    cap = open_camera()
-    camera_active = (cap is not None)
-
-    # 2. Initialize ONNX Inference Engine
-    model_active = False
-    engine = None
-    smoother = None
-    voter = None
-
-    if HAS_FREESPACE:
-        model_path = Path(__file__).parent / "models" / "freespace_int8.onnx"
-        if not model_path.exists():
-            model_path = Path(__file__).parent / "freespace_int8.onnx"
-        if model_path.exists():
-            try:
-                engine = FreespaceInference(model_path)
-                smoother = MaskSmoother(window=3)
-                voter = DirectionVoter(window=5)
-                model_active = True
-                print("[BACKEND] ✓ Free-space ONNX model loaded successfully.")
-            except Exception as e:
-                print(f"[BACKEND] ⚠ Failed to load free-space model: {e}. Running in Canny edge mode.")
+class CameraCaptureThread(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.cap = None
+        self.frame = None
+        self.lock = threading.Lock()
+        self.running = False
+        self.sim_t = 0.0
+        
+    def run(self):
+        self.cap = open_camera()
+        if self.cap is not None:
+            self.running = True
         else:
-            print(f"[BACKEND] ⚠ Model not found at {model_path}. Running in Canny edge mode.")
-    else:
-        print("[BACKEND] ⚠ Free-space model libs not imported. Running in Canny edge mode.")
-
-    # Simulation variables in case camera fails
-    sim_t = 0.0
-    frame_times = []
-    
-    # Pre-generate standard blank HUD in case of camera error
-    blank_hud = np.zeros((320, 320, 3), dtype=np.uint8)
-    for x in range(0, 320, 40):
-        cv2.line(blank_hud, (x, 0), (x, 320), (20, 20, 40), 1)
-    for y in range(0, 320, 40):
-        cv2.line(blank_hud, (0, y), (320, y), (20, 20, 40), 1)
-    cv2.line(blank_hud, (160, 160), (40, 320), (0, 100, 255), 1)
-    cv2.line(blank_hud, (160, 160), (280, 320), (0, 100, 255), 1)
-
-    while not shutdown_event.is_set():
-        t_start = time.perf_counter()
-        frame = None
-
-        if camera_active:
-            # Grab+retrieve pattern to always get the latest frame
-            cap.grab()
-            ret, frame = cap.retrieve()
-            if not ret:
-                print("[BACKEND] ⚠ Camera read failed. Releasing camera.")
-                camera_active = False
-                cap.release()
-                
-        # If camera is offline, fallback to simulation mode
-        is_simulated = not camera_active
-        if is_simulated:
-            if model_active:
-                sim_t += 0.05
-                frame = make_synthetic_frame(sim_t)
+            print("[CAMERA] Camera offline. Falling back to simulation.")
+            self.running = False
+            
+        frame_times = []
+        while not shutdown_event.is_set():
+            t_start = time.perf_counter()
+            if self.running and self.cap is not None:
+                ret, frame = self.cap.read()
+                if not ret:
+                    print("[CAMERA] Frame read failed. Releasing camera.")
+                    self.cap.release()
+                    self.cap = None
+                    self.running = False
+                    continue
+                with self.lock:
+                    self.frame = frame
             else:
-                frame = blank_hud.copy()
+                self.sim_t += 0.05
+                frame = make_synthetic_frame(self.sim_t)
+                with self.lock:
+                    self.frame = frame
+                time.sleep(0.033)
+                
+            t_end = time.perf_counter()
+            frame_times.append(t_end - t_start)
+            if len(frame_times) > 30:
+                frame_times.pop(0)
+            global cam_fps
+            cam_fps = 1.0 / np.mean(frame_times) if frame_times else 0.0
+            
+    def get_latest_frame(self):
+        with self.lock:
+            if self.frame is not None:
+                return self.frame.copy()
+            return None
 
-        # Run detection
-        direction = "FORWARD"
-        obstacles = []
-        obstacle_count = 0
-        smoothed_mask = None
+class InferenceThread(threading.Thread):
+    def __init__(self, camera_thread):
+        super().__init__(daemon=True)
+        self.camera_thread = camera_thread
+        
+    def run(self):
+        global latest_jpeg_frame, latest_telemetry, inf_fps, avg_inference_time
+        print("[INFERENCE] Starting Inference thread...")
+        
+        # Initialize ONNX Inference Engine
+        model_active = False
+        engine = None
+        smoother = None
+        voter = None
 
-        if model_active and engine is not None:
-            try:
-                tensor = engine.preprocess(frame)
-                mask = engine.infer(tensor)
-                smoothed_mask = smoother.update(mask)
-                raw_direction, zone_info = mask_to_direction(smoothed_mask)
-                direction = voter.vote(raw_direction).upper()
+        if HAS_FREESPACE:
+            model_path = Path(__file__).parent / "models" / "freespace_int8.onnx"
+            if not model_path.exists():
+                model_path = Path(__file__).parent / "freespace_int8.onnx"
+            if model_path.exists():
+                try:
+                    engine = FreespaceInference(model_path)
+                    smoother = MaskSmoother(window=3)
+                    voter = DirectionVoter(window=5)
+                    model_active = True
+                    print("[INFERENCE] ✓ Free-space ONNX model loaded successfully.")
+                except Exception as e:
+                    print(f"[INFERENCE] ⚠ Failed to load free-space model: {e}. Running in Canny edge mode.")
+            else:
+                print(f"[INFERENCE] ⚠ Model not found at {model_path}. Running in Canny edge mode.")
+        else:
+            print("[INFERENCE] ⚠ Free-space model libs not imported. Running in Canny edge mode.")
+
+        frame_times = []
+        inf_times_accum = []
+        
+        # Pre-generate standard blank HUD in case of camera error
+        blank_hud = np.zeros((320, 320, 3), dtype=np.uint8)
+        for x in range(0, 320, 40):
+            cv2.line(blank_hud, (x, 0), (x, 320), (20, 20, 40), 1)
+        for y in range(0, 320, 40):
+            cv2.line(blank_hud, (0, y), (320, y), (20, 20, 40), 1)
+        cv2.line(blank_hud, (160, 160), (40, 320), (0, 100, 255), 1)
+        cv2.line(blank_hud, (160, 160), (280, 320), (0, 100, 255), 1)
+
+        while not shutdown_event.is_set():
+            t_start = time.perf_counter()
+            frame = self.camera_thread.get_latest_frame()
+            if frame is None:
+                time.sleep(0.01)
+                continue
                 
-                walkable_pct = float(zone_info.get('total_free', 0.0)) * 100.0
-                
-                obs_mask = (smoothed_mask == 0).astype(np.uint8) * 255
-                obs_mask_bottom = np.zeros_like(obs_mask)
-                obs_mask_bottom[160:, :] = obs_mask[160:, :]
-                
-                contours, _ = cv2.findContours(obs_mask_bottom, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                for contour in contours:
-                    area = cv2.contourArea(contour)
-                    if area < 500:
-                        continue
-                    x, y, box_w, box_h = cv2.boundingRect(contour)
-                    if box_h < 15 or box_w < 15:
-                        continue
+            # If camera resolution is 320x240, we resize to 320x320 for the model
+            if frame.shape[0] != 320 or frame.shape[1] != 320:
+                frame_inference = cv2.resize(frame, (320, 320))
+            else:
+                frame_inference = frame
+
+            # Run detection
+            direction = "FORWARD"
+            obstacles = []
+            obstacle_count = 0
+            smoothed_mask = None
+
+            t_inf_start = time.perf_counter()
+            if model_active and engine is not None:
+                try:
+                    tensor = engine.preprocess(frame_inference)
+                    mask = engine.infer(tensor)
+                    smoothed_mask = smoother.update(mask)
+                    raw_direction, zone_info = mask_to_direction(smoothed_mask)
+                    direction = voter.vote(raw_direction).upper()
                     
-                    cx = (x + box_w / 2) / 320.0
-                    cy = (y + box_h / 2) / 320.0
-                    distance = max(0.4, min(8.0, 1.2 + 140.0 / (box_h + 1e-6)))
+                    walkable_pct = float(zone_info.get('total_free', 0.0)) * 100.0
                     
-                    label = "Obstacle"
+                    obs_mask = (smoothed_mask == 0).astype(np.uint8) * 255
+                    obs_mask_bottom = np.zeros_like(obs_mask)
+                    obs_mask_bottom[160:, :] = obs_mask[160:, :]
+                    
+                    contours, _ = cv2.findContours(obs_mask_bottom, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    for contour in contours:
+                        area = cv2.contourArea(contour)
+                        if area < 500:
+                            continue
+                        x, y, box_w, box_h = cv2.boundingRect(contour)
+                        if box_h < 15 or box_w < 15:
+                            continue
                         
-                    obstacles.append({
-                        "label": label,
-                        "distance": round(float(distance), 1),
-                        "x": int(x),
-                        "y": int(y),
-                        "w": int(box_w),
-                        "h": int(box_h),
-                        "center_x": round(float(cx), 2),
-                        "center_y": round(float(cy), 2),
-                    })
-                
-                obstacles = sorted(obstacles, key=lambda item: item['distance'])
-                obstacle_count = len(obstacles)
-                
-                if not obstacles:
+                        cx = (x + box_w / 2) / 320.0
+                        cy = (y + box_h / 2) / 320.0
+                        distance = max(0.4, min(8.0, 1.2 + 140.0 / (box_h + 1e-6)))
+                        
+                        label = "Obstacle"
+                            
+                        obstacles.append({
+                            "label": label,
+                            "distance": round(float(distance), 1),
+                            "x": int(x),
+                            "y": int(y),
+                            "w": int(box_w),
+                            "h": int(box_h),
+                            "center_x": round(float(cx), 2),
+                            "center_y": round(float(cy), 2),
+                        })
+                    
+                    obstacles = sorted(obstacles, key=lambda item: item['distance'])
+                    obstacle_count = len(obstacles)
+                    
+                    if not obstacles:
+                        obstacles = [
+                            {
+                                "label": "Walkable",
+                                "distance": round(max(0.0, 100.0 - walkable_pct) / 10.0, 1),
+                                "x": 0, "y": 0, "w": 0, "h": 0,
+                                "center_x": 0.5, "center_y": 0.5,
+                                "conf": round(walkable_pct / 100.0, 2)
+                            }
+                        ]
+                except Exception as ex:
+                    print(f"[INFERENCE] Free-space inference error: {ex}")
+                    direction, obstacles, obstacle_count = detect_obstacles_canny(frame_inference)
+            else:
+                # Fallback to Canny or simulated objects
+                if not self.camera_thread.running:
+                    sim_t = self.camera_thread.sim_t
+                    cy1 = 0.65 + 0.25 * np.sin(sim_t)
+                    cx1 = 0.25 + 0.05 * np.cos(sim_t)
+                    w1, h1 = 0.12, 0.28
+                    x1_min = int((cx1 - w1/2) * 320)
+                    x1_max = int((cx1 + w1/2) * 320)
+                    y1_min = int((cy1 - h1/2) * 320)
+                    y1_max = int((cy1 + h1/2) * 320)
+                    
+                    cy2 = 0.70 + 0.20 * np.cos(sim_t * 0.7)
+                    cx2 = 0.75 + 0.03 * np.sin(sim_t * 0.7)
+                    w2, h2 = 0.22, 0.18
+                    x2_min = int((cx2 - w2/2) * 320)
+                    x2_max = int((cx2 + w2/2) * 320)
+                    y2_min = int((cy2 - h2/2) * 320)
+                    y2_max = int((cy2 + h2/2) * 320)
+
+                    dist1 = max(0.5, 8.0 - (cy1 * 8.0))
+                    dist2 = max(0.5, 8.0 - (cy2 * 8.0))
+
                     obstacles = [
                         {
-                            "label": "Walkable",
-                            "distance": round(max(0.0, 100.0 - walkable_pct) / 10.0, 1),
-                            "x": 0, "y": 0, "w": 0, "h": 0,
-                            "center_x": 0.5, "center_y": 0.5,
-                            "conf": round(walkable_pct / 100.0, 2)
+                            "label": "Obstacle",
+                            "distance": round(float(dist1), 1),
+                            "x": x1_min, "y": y1_min, "w": (x1_max - x1_min), "h": (y1_max - y1_min),
+                            "center_x": round(float(cx1), 2), "center_y": round(float(cy1), 2)
+                        },
+                        {
+                            "label": "Obstacle",
+                            "distance": round(float(dist2), 1),
+                            "x": x2_min, "y": y2_min, "w": (x2_max - x2_min), "h": (y2_max - y2_min),
+                            "center_x": round(float(cx2), 2), "center_y": round(float(cy2), 2)
                         }
                     ]
-                
-                if voice is not None and direction != "FORWARD":
-                    voice.speak(direction)
-            except Exception as ex:
-                print(f"[BACKEND] Free-space inference error: {ex}")
-                direction, obstacles, obstacle_count = detect_obstacles_canny(frame)
-        else:
-            if is_simulated:
-                sim_t += 0.05
-                cy1 = 0.65 + 0.25 * np.sin(sim_t)
-                cx1 = 0.25 + 0.05 * np.cos(sim_t)
-                w1, h1 = 0.12, 0.28
-                x1_min = int((cx1 - w1/2) * 320)
-                x1_max = int((cx1 + w1/2) * 320)
-                y1_min = int((cy1 - h1/2) * 320)
-                y1_max = int((cy1 + h1/2) * 320)
-                
-                cy2 = 0.70 + 0.20 * np.cos(sim_t * 0.7)
-                cx2 = 0.75 + 0.03 * np.sin(sim_t * 0.7)
-                w2, h2 = 0.22, 0.18
-                x2_min = int((cx2 - w2/2) * 320)
-                x2_max = int((cx2 + w2/2) * 320)
-                y2_min = int((cy2 - h2/2) * 320)
-                y2_max = int((cy2 + h2/2) * 320)
-
-                dist1 = max(0.5, 8.0 - (cy1 * 8.0))
-                dist2 = max(0.5, 8.0 - (cy2 * 8.0))
-
-                obstacles = [
-                    {
-                        "label": "Obstacle",
-                        "distance": round(float(dist1), 1),
-                        "x": x1_min, "y": y1_min, "w": (x1_max - x1_min), "h": (y1_max - y1_min),
-                        "center_x": round(float(cx1), 2), "center_y": round(float(cy1), 2)
-                    },
-                    {
-                        "label": "Obstacle",
-                        "distance": round(float(dist2), 1),
-                        "x": x2_min, "y": y2_min, "w": (x2_max - x2_min), "h": (y2_max - y2_min),
-                        "center_x": round(float(cx2), 2), "center_y": round(float(cy2), 2)
-                    }
-                ]
-                obstacles = sorted(obstacles, key=lambda item: item['distance'])
-                obstacle_count = len(obstacles)
-                
-                closest = obstacles[0]
-                if closest['distance'] < 1.8:
-                    direction = "STOP"
-                elif closest['center_x'] < 0.33:
-                    direction = "SLIGHT LEFT"
-                elif closest['center_x'] > 0.67:
-                    direction = "SLIGHT RIGHT"
+                    obstacles = sorted(obstacles, key=lambda item: item['distance'])
+                    obstacle_count = len(obstacles)
+                    
+                    closest = obstacles[0]
+                    if closest['distance'] < 1.8:
+                        direction = "STOP"
+                    elif closest['center_x'] < 0.33:
+                        direction = "SLIGHT LEFT"
+                    elif closest['center_x'] > 0.67:
+                        direction = "SLIGHT RIGHT"
+                    else:
+                        direction = "FORWARD"
                 else:
-                    direction = "FORWARD"
-            else:
-                direction, obstacles, obstacle_count = detect_obstacles_canny(frame)
-
-        vis = frame.copy()
-        if vis.shape[0] != 320 or vis.shape[1] != 320:
-            vis = cv2.resize(vis, (320, 320))
-
-        if model_active and smoothed_mask is not None:
-            mask_resized = cv2.resize(smoothed_mask, (320, 320), interpolation=cv2.INTER_NEAREST)
-            walkable = mask_resized > 0
-            vis[walkable] = (vis[walkable] * 0.6 + np.array([0, 220, 0], dtype=np.uint8) * 0.4).astype(np.uint8)
+                    direction, obstacles, obstacle_count = detect_obstacles_canny(frame_inference)
             
-            non_walkable = ~walkable
-            bottom_half_mask = np.zeros((320, 320), dtype=bool)
-            bottom_half_mask[160:, :] = True
-            nw_bottom = non_walkable & bottom_half_mask
-            vis[nw_bottom] = (vis[nw_bottom] * 0.8 + np.array([0, 0, 180], dtype=np.uint8) * 0.2).astype(np.uint8)
+            t_inf_end = time.perf_counter()
+            inf_times_accum.append(t_inf_end - t_inf_start)
+            if len(inf_times_accum) > 30:
+                inf_times_accum.pop(0)
+            avg_inference_time = np.mean(inf_times_accum)
 
-        cv2.line(vis, (int(320 * 0.33), 0), (int(320 * 0.33), 320), (50, 50, 100), 1)
-        cv2.line(vis, (int(320 * 0.67), 0), (int(320 * 0.67), 320), (50, 50, 100), 1)
+            # Draw visualization overlay
+            vis = frame_inference.copy()
+            if model_active and smoothed_mask is not None:
+                mask_resized = cv2.resize(smoothed_mask, (320, 320), interpolation=cv2.INTER_NEAREST)
+                walkable = mask_resized > 0
+                vis[walkable] = (vis[walkable] * 0.6 + np.array([0, 220, 0], dtype=np.uint8) * 0.4).astype(np.uint8)
+                
+                non_walkable = ~walkable
+                bottom_half_mask = np.zeros((320, 320), dtype=bool)
+                bottom_half_mask[160:, :] = True
+                nw_bottom = non_walkable & bottom_half_mask
+                vis[nw_bottom] = (vis[nw_bottom] * 0.8 + np.array([0, 0, 180], dtype=np.uint8) * 0.2).astype(np.uint8)
 
-        for obs in obstacles:
-            x, y, w, h = obs['x'], obs['y'], obs['w'], obs['h']
-            if w == 0 or h == 0:
-                continue
-            lbl = obs['label']
-            dst = obs['distance']
-            if dst < 2.0:
-                color = (0, 0, 255)
-            elif dst < 3.5:
-                color = (0, 255, 255)
-            else:
-                color = (0, 255, 0)
-            cv2.rectangle(vis, (x, y), (x + w, y + h), color, 2)
-            cv2.putText(vis, f"{lbl} {dst:.1f}m", (x, max(15, y - 5)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+            cv2.line(vis, (int(320 * 0.33), 0), (int(320 * 0.33), 320), (50, 50, 100), 1)
+            cv2.line(vis, (int(320 * 0.67), 0), (int(320 * 0.67), 320), (50, 50, 100), 1)
 
-        cv2.putText(vis, f"DIR: {direction}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+            for obs in obstacles:
+                x, y, w, h = obs['x'], obs['y'], obs['w'], obs['h']
+                if w == 0 or h == 0:
+                    continue
+                lbl = obs['label']
+                dst = obs['distance']
+                if dst < 2.0:
+                    color = (0, 0, 255)
+                elif dst < 3.5:
+                    color = (0, 255, 255)
+                else:
+                    color = (0, 255, 0)
+                cv2.rectangle(vis, (x, y), (x + w, y + h), color, 2)
+                cv2.putText(vis, f"{lbl} {dst:.1f}m", (x, max(15, y - 5)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
 
-        t_end = time.perf_counter()
-        frame_times.append(t_end - t_start)
-        if len(frame_times) > 30:
-            frame_times.pop(0)
-        fps = 1.0 / np.mean(frame_times) if frame_times else 0.0
+            cv2.putText(vis, f"DIR: {direction}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
 
-        _, buffer = cv2.imencode('.jpg', vis)
-        jpeg_bytes = buffer.tobytes()
+            t_end = time.perf_counter()
+            frame_times.append(t_end - t_start)
+            if len(frame_times) > 30:
+                frame_times.pop(0)
+            inf_fps = 1.0 / np.mean(frame_times) if frame_times else 0.0
 
-        with frame_lock:
-            latest_jpeg_frame = jpeg_bytes
+            # JPEG Encode (quality 60)
+            _, buffer = cv2.imencode('.jpg', vis, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
+            jpeg_bytes = buffer.tobytes()
 
-        firestore_frame = None
-        if HAS_FIREBASE:
-            try:
-                small_vis = cv2.resize(vis, (240, 240))
-                _, small_buffer = cv2.imencode('.jpg', small_vis, [int(cv2.IMWRITE_JPEG_QUALITY), 40])
-                firestore_frame = base64.b64encode(small_buffer).decode('utf-8')
-            except Exception as e:
-                print(f"[FIREBASE] Failed to encode Firestore frame: {e}")
+            with frame_lock:
+                latest_jpeg_frame = jpeg_bytes
 
-        with telemetry_lock:
-            latest_telemetry.update({
-                "direction": direction,
-                "fps": round(fps, 1),
-                "obstacle_count": obstacle_count,
-                "obstacles": obstacles[:5],
-                "status": {
-                    "camera": "Connected" if camera_active else "Simulated",
-                    "model": "Free-space ONNX" if model_active else ("Canny Edge" if not is_simulated else "Simulated"),
-                    "server": "Active"
-                }
-            })
+            firestore_frame = None
+            if HAS_FIREBASE:
+                try:
+                    small_vis = cv2.resize(vis, (240, 240))
+                    _, small_buffer = cv2.imencode('.jpg', small_vis, [int(cv2.IMWRITE_JPEG_QUALITY), 40])
+                    firestore_frame = base64.b64encode(small_buffer).decode('utf-8')
+                except Exception as e:
+                    print(f"[FIREBASE] Failed to encode Firestore frame: {e}")
 
-        # Push frame and telemetry to Firebase independently
-        if HAS_FIREBASE:
-            # Fast frame push (separate document, ~5 FPS)
-            if firestore_frame:
-                firebase_cloud.push_frame(firestore_frame, fps=fps)
-            # Slower telemetry push (direction, obstacles, status)
             with telemetry_lock:
-                telem_snapshot = dict(latest_telemetry)
-            firebase_cloud.push_telemetry(telem_snapshot)
+                latest_telemetry.update({
+                    "direction": direction,
+                    "fps": round(inf_fps, 1),
+                    "obstacle_count": obstacle_count,
+                    "obstacles": obstacles[:5],
+                    "status": {
+                        "camera": "Connected" if self.camera_thread.running else "Simulated",
+                        "model": "Free-space ONNX" if model_active else ("Canny Edge" if self.camera_thread.running else "Simulated"),
+                        "server": "Active"
+                    }
+                })
 
-        if voice is not None and obstacle_count > 0 and obstacles[0]['distance'] < 3.5:
-            alert_text = f"Obstacle detected. Count of obstacles: {obstacle_count}."
-            voice.speak(alert_text)
-            level = "danger" if obstacles[0]['distance'] < 1.8 else "warn"
-            add_log("NAV", f"DIR={direction} | Obstacles={obstacle_count} | Closest={obstacles[0]['distance']}m", level)
+            if HAS_FIREBASE:
+                if firestore_frame:
+                    firebase_cloud.push_frame(firestore_frame, fps=inf_fps)
+                with telemetry_lock:
+                    telem_snapshot = dict(latest_telemetry)
+                firebase_cloud.push_telemetry(telem_snapshot)
 
-        if HAS_FIREBASE and obstacle_count > 0 and obstacles[0]['distance'] < 1.8:
-            firebase_cloud.push_alert(
-    alert_type="DANGER_OBSTACLE",
-    free_ratio=0.0,  # Pass a numeric float here
-    reason=f"Direction={direction} | Obstacles={obstacle_count} | Closest={obstacles[0]['distance']}m"
-)
+            if voice is not None:
+                voice.speak_navigation(direction, obstacles)
 
+            if obstacle_count > 0 and obstacles[0]['distance'] < 3.5:
+                level = "danger" if obstacles[0]['distance'] < 1.8 else "warn"
+                add_log("NAV", f"DIR={direction} | Obstacles={obstacle_count} | Closest={obstacles[0]['distance']}m", level)
 
-        if HAS_MQTT:
-            try:
-                threading.Thread(
-                    target=mqtt_client.publish_status,
-                    args=(direction,),
-                    daemon=True
-                ).start()
+            if HAS_FIREBASE and obstacle_count > 0 and obstacles[0]['distance'] < 1.8:
+                firebase_cloud.push_alert(
+                    alert_type="DANGER_OBSTACLE",
+                    free_ratio=0.0,
+                    reason=f"Direction={direction} | Obstacles={obstacle_count} | Closest={obstacles[0]['distance']}m"
+                )
 
-                if len(obstacles) > 0:
-                    lbls = [o['label'] for o in obstacles]
-                    threading.Thread(
-                        target=mqtt_client.publish_navigation,
-                        args=(direction, lbls, round(fps, 1)),
-                        daemon=True
-                    ).start()
-            except Exception:
-                pass
+            if HAS_MQTT:
+                try:
+                    mqtt_client.publish_status(direction)
+                    mqtt_client.publish_navigation(direction, obstacles, round(inf_fps, 1))
+                except Exception:
+                    pass
 
-        # Throttle loop to ~30 FPS (33ms) for smooth streaming
-        sleep_time = max(0.005, 0.033 - (time.perf_counter() - t_start))
-        time.sleep(sleep_time)
+            sleep_time = max(0.005, 0.033 - (time.perf_counter() - t_start))
+            time.sleep(sleep_time)
 
-    if camera_active:
-        cap.release()
-    print("[BACKEND] Navigation loop shutdown completed.")
+        print("[INFERENCE] Inference thread shutdown completed.")
+
+def run_metrics_loop():
+    import psutil
+    print("[METRICS] Metrics reporting thread started.")
+    while not shutdown_event.is_set():
+        time.sleep(5.0)
+        
+        cpu = psutil.cpu_percent()
+        ram = psutil.virtual_memory().percent
+        
+        fb_qsize = firebase_cloud._write_queue.qsize() if (HAS_FIREBASE and firebase_cloud._write_queue is not None) else 0
+        mqtt_qsize = 0
+        
+        with stream_lock:
+            global stream_frame_count
+            stream_fps_val = stream_frame_count / 5.0
+            stream_frame_count = 0
+            avg_stream_lat = np.mean(stream_latencies) if stream_latencies else 0.0
+            stream_latencies.clear()
+            
+        print(f"\n================ SYSTEM METRICS (5s) ================")
+        print(f"Camera FPS: {cam_fps:.1f} | Inference FPS: {inf_fps:.1f} | Streaming FPS: {stream_fps_val:.1f}")
+        print(f"CPU: {cpu}% | RAM: {ram}%")
+        print(f"Average Inference Time: {avg_inference_time*1000:.1f}ms")
+        print(f"Average Streaming Latency: {avg_stream_lat*1000:.1f}ms")
+        print(f"Firebase Queue Length: {fb_qsize} | MQTT Queue Length: {mqtt_qsize}")
+        print(f"=====================================================\n")
 
 @app.route('/')
 def index():
@@ -603,7 +683,11 @@ def index():
 
 @app.route('/<path:path>')
 def serve_static(path):
-    return send_from_directory(UI_FOLDER, path)
+    response = send_from_directory(UI_FOLDER, path)
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 @app.route('/favicon.ico')
 def favicon():
@@ -612,13 +696,18 @@ def favicon():
 @app.route('/video')
 def video_feed():
     def generate():
+        global stream_frame_count
         while True:
+            t_start = time.perf_counter()
             with frame_lock:
                 frame_bytes = latest_jpeg_frame
             if frame_bytes is not None:
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            time.sleep(0.06)
+                with stream_lock:
+                    stream_frame_count += 1
+                    stream_latencies.append(time.perf_counter() - t_start)
+            time.sleep(0.10) # limit to ~10 FPS
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/api/telemetry')
@@ -701,27 +790,36 @@ def run_health_loop():
             return 45.0
             
     print("[SERVER] Starting Device Health MQTT Publisher Loop...")
+    _health_interval = 5.0  # Push health every 5 seconds
     while not shutdown_event.is_set():
-        if HAS_MQTT:
-            try:
-                temp = get_cpu_temp()
-                cpu = psutil.cpu_percent()
-                mem = psutil.virtual_memory().percent
+        try:
+            temp = get_cpu_temp()
+            cpu = psutil.cpu_percent()
+            mem = psutil.virtual_memory().percent
+            if HAS_MQTT:
                 mqtt_client.publish_health(temp, cpu, mem)
-            except Exception as e:
-                pass
-        time.sleep(3.0)
+            if HAS_FIREBASE:
+                firebase_cloud.push_health(cpu=cpu, memory=mem, temp=temp)
+        except Exception as e:
+            pass
+        time.sleep(_health_interval)
 
 @atexit.register
 def cleanup():
     shutdown_event.set()
 
 if __name__ == '__main__':
-    nav_thread = threading.Thread(target=run_navigation_loop, daemon=True)
-    nav_thread.start()
+    camera_thread = CameraCaptureThread()
+    camera_thread.start()
+
+    inference_thread = InferenceThread(camera_thread)
+    inference_thread.start()
 
     health_thread = threading.Thread(target=run_health_loop, daemon=True)
     health_thread.start()
+
+    metrics_thread = threading.Thread(target=run_metrics_loop, daemon=True)
+    metrics_thread.start()
 
     print(f"\n[SERVER] Starting dashboard on http://{HOST}:{PORT}")
     try:
@@ -730,6 +828,8 @@ if __name__ == '__main__':
         pass
     finally:
         shutdown_event.set()
-        nav_thread.join(timeout=2.0)
+        camera_thread.join(timeout=2.0)
+        inference_thread.join(timeout=2.0)
         health_thread.join(timeout=2.0)
+        metrics_thread.join(timeout=2.0)
         print("[SERVER] Stopped.")

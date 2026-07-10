@@ -192,6 +192,33 @@
     <span id="footer-clock">—</span>
   </footer>
 
+  <!-- ══════════════════ VOICE ENABLE BUTTON ══════════════════ -->
+  <button id="voice-enable-btn" onclick="enablePortalVoice()" title="Enable voice for emergency alerts only">
+    🔇 Enable Alerts
+  </button>
+  <style>
+    #voice-enable-btn {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 9999;
+      padding: 10px 18px;
+      border-radius: 30px;
+      border: 1px solid #6c63ff;
+      background: rgba(0,0,0,0.75);
+      color: #6c63ff;
+      font-family: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      backdrop-filter: blur(8px);
+      transition: all 0.3s ease;
+    }
+    #voice-enable-btn.active {
+      border-color: #36f797;
+      color: #36f797;
+    }
+  </style>
+
   <!-- ══════════════════ SCRIPTS ══════════════════ -->
 
   <!-- Firebase SDKs (v9 modular via CDN compat shim) -->
@@ -416,6 +443,60 @@
       'SLIGHT LEFT': '↖', 'SLIGHT RIGHT': '↗', 'BACK': '↓'
     };
 
+    // ── Caretaker alert voice (emergency events ONLY) ─────────────────────────
+    // Navigation directions (Forward, Left, Right, etc.) are NEVER spoken here.
+    // Only danger/emergency events trigger audio.
+    let _voiceEnabled = false;
+    let _lastAlertSpoken = '';
+    const _synth = window.speechSynthesis;
+
+    window.enablePortalVoice = function() {
+      _voiceEnabled = true;
+      const btn = document.getElementById('voice-enable-btn');
+      if (btn) {
+        btn.textContent = '🔔 Alerts ON';
+        btn.classList.add('active');
+      }
+      // Unlock audio context with a near-silent utterance (browser policy)
+      const u = new SpeechSynthesisUtterance('Emergency alerts enabled');
+      u.volume = 0.1;
+      _synth.speak(u);
+    };
+
+    // Map alert_type / event keys to human-readable spoken phrases
+    const ALERT_PHRASES = {
+      'DANGER_OBSTACLE':  'Danger. User is blocked.',
+      'DANGER':           'Danger. User is blocked.',
+      'SOS':              'S O S activated. Immediate attention required.',
+      'CONNECTION_LOST':  'Connection lost.',
+      'BATTERY_LOW':      'Battery critically low.',
+      'STUCK':            'User has stopped for more than ten seconds.',
+      'EMERGENCY':        'Emergency detected.',
+    };
+
+    function speakAlert(alertType, fallbackDetail) {
+      if (!_voiceEnabled || !_synth) return;
+
+      const key = (alertType || '').toUpperCase().replace(/ /g, '_');
+      const phrase = ALERT_PHRASES[key] ||
+        (fallbackDetail ? 'Alert: ' + fallbackDetail : 'Emergency detected.');
+
+      if (phrase === _lastAlertSpoken) return; // Deduplicate same alert
+      _lastAlertSpoken = phrase;
+
+      _synth.cancel();
+      const utter = new SpeechSynthesisUtterance(phrase);
+      utter.rate   = 0.95;  // Slightly slower for clarity in emergencies
+      utter.pitch  = 1.0;
+      utter.volume = 1.0;
+      const voices = _synth.getVoices();
+      const preferred = voices.find(v =>
+        v.lang.startsWith('en') && (v.name.includes('Google') || v.name.includes('Natural') || v.localService)
+      );
+      if (preferred) utter.voice = preferred;
+      _synth.speak(utter);
+    }
+
     function updateTelemetry(data) {
       const dir = (data.navigation_status || data.direction || 'UNKNOWN').toUpperCase();
       document.getElementById('direction-text').textContent = dir;
@@ -430,8 +511,8 @@
       document.getElementById('direction-sub').textContent =
         new Date().toLocaleTimeString();
 
-      const obsCount = data.obstacle_count ?? '—';
-      document.getElementById('obstacle-count').textContent = obsCount;
+      const obsCount = data.obstacle_count ?? 0;
+      document.getElementById('obstacle-count').textContent = obsCount !== 0 ? obsCount : '—';
       const dist = data.closest_obstacle_m;
       document.getElementById('obstacle-dist').textContent =
         dist != null ? dist + ' m away' : 'Clear path';
@@ -446,6 +527,9 @@
       document.getElementById('sys-model').innerHTML   = colored(data.model_status, 'Free-space ONNX');
       document.getElementById('sys-server').innerHTML  = colored(data.server_status, 'Active');
       document.getElementById('sys-fps').textContent   = data.fps ? data.fps + ' fps' : '—';
+
+      // NOTE: Navigation direction (Forward/Left/Right/Stop) is intentionally
+      // NOT spoken here. Caretaker portal only speaks emergency alerts.
     }
 
     // Fast camera frame updater with Image() preloading to prevent flicker
@@ -518,6 +602,9 @@
       document.getElementById('danger-detail').textContent = data.reason || data.details || '';
       document.getElementById('danger-time').textContent  = formatTime(data.timestamp);
       setTimeout(() => banner.classList.add('hidden'), 10000);
+
+      // Speak the emergency alert (caretaker-only voice trigger)
+      speakAlert(data.alert_type || data.event, data.reason || data.details);
     }
 
     function setLiveBadge(state, text) {

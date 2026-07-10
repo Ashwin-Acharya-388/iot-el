@@ -1,5 +1,8 @@
 # SafeGuide System Startup Commands
 
+ssh jatayu@jatayu.local
+passward ->jatayu@26
+for disconectting cd then exit
 Save this file for later! Whenever you restart your Raspberry Pi, you can use these commands to easily boot up both dashboards and deploy the Caretaker Portal to the internet.
 
 ### 1. Start Both Servers (Run on Raspberry Pi)
@@ -29,6 +32,8 @@ nohup python3 -m http.server 8000 -d caretaker-portal > portal.log 2>&1 &
 
 - **AI Command Center (Main Dashboard):** Open your laptop browser and go to `http://10.134.165.237:5500`
 - **Caretaker Portal:** Open your laptop browser and go to `http://10.134.165.237:8000`
+**AI Command Center (Main Dashboard):** Open your laptop browser and go to http://10.159.27.237:5500
+- **Caretaker Portal:** Open your laptop browser and go to http://10.159.27.237:8000
 
 ---
 

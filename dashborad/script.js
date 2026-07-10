@@ -69,12 +69,23 @@ function setStatus(isActive) {
 }
 
 // ── Voice command formatting ──────────────────────────────────────
+const DIR_PHRASES = {
+  'FORWARD':      'Forward',
+  'LEFT':         'Turn left',
+  'RIGHT':        'Turn right',
+  'SLIGHT LEFT':  'Slight left',
+  'SLIGHT RIGHT': 'Slight right',
+  'STOP':         'Stop',
+};
+
 function formatCommand(data) {
-  const count = data.obstacle_count || 0;
-  if (count > 0) {
-    return `Obstacle detected. Count of obstacles: ${count}.`;
+  const dir = (data.direction || 'FORWARD').toUpperCase().trim();
+  const dirPhrase = DIR_PHRASES[dir] || data.direction || 'Forward';
+  const hasObstacle = (data.obstacle_count || 0) > 0;
+  if (hasObstacle) {
+    return `${dirPhrase}. Obstacle ahead.`;
   }
-  return data.direction || 'FORWARD';
+  return `${dirPhrase}.`;
 }
 
 // ── Dashboard update ──────────────────────────────────────────────

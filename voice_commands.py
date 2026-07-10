@@ -42,6 +42,25 @@ from typing import Optional
 COOLDOWN_SECONDS = 1.5     # Min gap between SAME command being repeated
 BASE_COMMANDS     = ["Left", "Right", "Slight Left", "Slight Right", "Forward", "Stop"]
 
+def float_to_words(val: float) -> str:
+    """Convert a numeric float (e.g. 1.5 or 2.0) into its word equivalent (e.g. 'one point five', 'two')."""
+    val = round(float(val), 1)
+    words = {
+        0: "zero", 1: "one", 2: "two", 3: "three", 4: "four",
+        5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine"
+    }
+    parts = str(val).split('.')
+    integer_part = int(parts[0])
+    decimal_part = int(parts[1]) if len(parts) > 1 else 0
+    
+    integer_word = words.get(integer_part, str(integer_part))
+    if decimal_part == 0:
+        return integer_word
+    else:
+        decimal_word = words.get(decimal_part, str(decimal_part))
+        return f"{integer_word} point {decimal_word}"
+
+
 # Distance-based command templates
 DISTANCE_COMMANDS = [
     "Person 1 meter",
@@ -158,6 +177,12 @@ class VoiceCommands:
         self._shutdown_flag = threading.Event()
         self._lock          = threading.Lock()
 
+        # State tracking for speech deduplication
+        self._last_nav_dir = None
+        self._last_has_obstacle = None
+        self._last_closest_dist = None
+        self._last_speak_text = None
+
         # Detect backend
         self._audio_files   = {}
         self._pygame_ready  = False
@@ -220,6 +245,7 @@ class VoiceCommands:
 
         with self._lock:
             if command == self._last_cmd and (now - self._last_time) < self.cooldown:
+                print("[TTS] Duplicate speech skipped")
                 return  # Debounced
             self._last_cmd  = command
             self._last_time = now
@@ -233,20 +259,77 @@ class VoiceCommands:
 
         self._queue.put(command)
 
+    # Direction → spoken phrase mapping
+    _DIR_PHRASES = {
+        "FORWARD":      "Forward",
+        "LEFT":         "Turn left",
+        "RIGHT":        "Turn right",
+        "SLIGHT LEFT":  "Slight left",
+        "SLIGHT RIGHT": "Slight right",
+        "STOP":         "Stop",
+    }
+
+    def speak_navigation(self, direction: str, obstacles: list):
+        """
+        Builds the navigation phrase from the direction and obstacle presence.
+        Never speaks obstacle count or obstacle labels.
+
+        Examples:
+          FORWARD + obstacle  → "Forward. Obstacle ahead."
+          RIGHT   + obstacle  → "Turn right. Obstacle ahead."
+          STOP    + obstacle  → "Stop. Obstacle ahead."
+          FORWARD (clear)     → "Forward."
+        """
+        has_obstacle = len(obstacles) > 0
+        closest_dist = None
+
+        if has_obstacle:
+            first = obstacles[0]
+            if isinstance(first, dict):
+                # Ignore walkable-only entries
+                if first.get("label") == "Walkable":
+                    has_obstacle = False
+                else:
+                    closest_dist = first.get("distance")
+
+        dir_key = direction.strip().upper()
+        dir_phrase = self._DIR_PHRASES.get(dir_key, direction.strip().title())
+
+        # Build phrase: "<Dir phrase>. Obstacle ahead." or "<Dir phrase>."
+        if has_obstacle:
+            phrase = f"{dir_phrase}. Obstacle ahead."
+        else:
+            phrase = f"{dir_phrase}."
+
+        # Conditions to speak:
+        dir_changed = (direction != self._last_nav_dir)
+        obs_state_changed = (has_obstacle != self._last_has_obstacle)
+
+        dist_changed = False
+        if closest_dist is not None and self._last_closest_dist is not None:
+            dist_changed = (abs(closest_dist - self._last_closest_dist) > 0.5)
+        elif closest_dist != self._last_closest_dist:
+            dist_changed = True
+
+        emergency = (dir_key == "STOP" or (closest_dist is not None and closest_dist < 1.8))
+
+        is_duplicate = (phrase == self._last_speak_text)
+
+        should_speak = (dir_changed or obs_state_changed or dist_changed or emergency) and not is_duplicate
+
+        if should_speak:
+            self._last_nav_dir = direction
+            self._last_has_obstacle = has_obstacle
+            self._last_closest_dist = closest_dist
+            self._last_speak_text = phrase
+            self.speak(phrase)
+        else:
+            print("[TTS] Duplicate speech skipped")
+
     def speak_with_distance(self, direction: str, obstacle_class: str, distance: float):
         """
         Queue a distance-aware navigation command.
-        
-        Example:
-            vc.speak_with_distance("Right", "car", 2.5)
-            → Speaks: "Right • Car, 2.5 meters"
-        
-        Args:
-            direction: Direction name ("Left", "Right", "Forward", etc.)
-            obstacle_class: Object type ("car", "person", "truck", etc.)
-            distance: Distance in meters
         """
-        # Format: "Direction • Obstacle, X meters"
         msg = f"{direction} • {obstacle_class.capitalize()}, {distance:.1f} meters"
         self.speak(msg)
 

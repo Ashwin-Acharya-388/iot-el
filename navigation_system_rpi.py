@@ -31,6 +31,12 @@ from typing import Optional, List, Tuple
 
 import numpy as np
 
+try:
+    import firebase_cloud
+    HAS_FIREBASE = True
+except Exception:
+    HAS_FIREBASE = False
+
 # ──────────────────────────────────────────────
 # CONFIGURATION
 # ──────────────────────────────────────────────
@@ -547,6 +553,43 @@ class ONNXInference:
 
 
 # ──────────────────────────────────────────────
+# CAMERA CAPTURE THREAD
+# ──────────────────────────────────────────────
+
+class CameraCaptureThread(threading.Thread):
+    def __init__(self, cap):
+        super().__init__(daemon=True)
+        self.cap = cap
+        self.frame = None
+        self.lock = threading.Lock()
+        self.running = True
+        self.fps = 0.0
+        
+    def run(self):
+        import time
+        import numpy as np
+        frame_times = []
+        while self.running:
+            t_start = time.perf_counter()
+            ret, frame = self.cap.read()
+            if not ret:
+                time.sleep(0.01)
+                continue
+            with self.lock:
+                self.frame = frame
+            t_end = time.perf_counter()
+            frame_times.append(t_end - t_start)
+            if len(frame_times) > 30:
+                frame_times.pop(0)
+            self.fps = 1.0 / np.mean(frame_times) if frame_times else 0.0
+                
+    def get_latest_frame(self):
+        with self.lock:
+            if self.frame is not None:
+                return self.frame.copy()
+            return None
+
+# ──────────────────────────────────────────────
 # MAIN NAVIGATION LOOP
 # ──────────────────────────────────────────────
 
@@ -565,8 +608,9 @@ class NavigationSystem:
         self.voter    = DirectionVoter(window=VOTE_WINDOW)
 
         # Import voice here to avoid slow startup
-        from voice_commands import VoiceCommands
-        self.voice    = VoiceCommands()
+        from voice_commands import VoiceCommands, float_to_words
+        self.voice       = VoiceCommands()
+        self._float_to_words = float_to_words
 
         # Camera
         import cv2
@@ -585,6 +629,9 @@ class NavigationSystem:
         signal.signal(signal.SIGINT,  self._shutdown)
         signal.signal(signal.SIGTERM, self._shutdown)
 
+    def _is_headless(self):
+        return "DISPLAY" not in os.environ
+
     def _shutdown(self, *_):
         print("\n  Shutting down gracefully...")
         self._running = False
@@ -592,28 +639,42 @@ class NavigationSystem:
     def run(self):
         """Main capture-infer-command loop."""
         import cv2
+        import psutil
 
         self._running = True
         frame_times   = collections.deque(maxlen=30)
+        inf_times     = collections.deque(maxlen=30)
         prev_command  = None
 
         print("\n  ▶ Navigation system running. Press Ctrl+C to stop.\n")
+
+        # Set capture dimensions to 320x240 for RPi efficiency
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+
+        # Start camera capture thread
+        capture_thread = CameraCaptureThread(self.cap)
+        capture_thread.start()
+
+        last_metrics_time = time.time()
 
         while self._running:
             t_frame_start = time.perf_counter()
 
             # ── Capture ────────────────────────────
-            ret, frame = self.cap.read()
-            if not ret:
-                print("  [WARN] Camera read failed; retrying...")
-                time.sleep(0.05)
+            frame = capture_thread.get_latest_frame()
+            if frame is None:
+                time.sleep(0.01)
                 continue
 
-            # ── Inference ──────────────────────────
-            tensor = self.engine.preprocess(frame)
+            # ── Preprocess & Inference ─────────────
+            # Resize from 320x240 to 320x320 for YOLO model
+            frame_resized = cv2.resize(frame, (320, 320))
+            tensor = self.engine.preprocess(frame_resized)
             t0     = time.perf_counter()
             output = self.engine.infer(tensor)
             lat_ms = (time.perf_counter() - t0) * 1000
+            inf_times.append(t_frame_end_tmp := (time.perf_counter() - t0))
             dets   = self.engine.postprocess(output, self.conf)
 
             # ── Tracking ───────────────────────────
@@ -628,31 +689,69 @@ class NavigationSystem:
             # ── Majority voting ────────────────────
             voted_direction = self.voter.vote(raw_direction)
 
-            # ── Voice output ───────────────────────
-            if self.voter.stable and voted_direction != prev_command:
-                # Generate distance-aware message
-                if closest_obs:
-                    obs_name, distance = closest_obs
-                    # Output like: "Left • Obstacle 2.3m"
-                    output_msg = f"{voted_direction} • {obs_name.capitalize()} {distance:.1f}m"
-                    self.voice.speak(output_msg)
-                else:
-                    self.voice.speak(voted_direction)
-                prev_command = voted_direction
+            # ── Voice output (unified format with state checks) ──
+            obs_list = []
+            if closest_obs:
+                obs_list.append({
+                    "label": closest_obs[0],
+                    "distance": closest_obs[1]
+                })
+            self.voice.speak_navigation(voted_direction, obs_list)
+
+            # ── Firebase telemetry push ────────────
+            if HAS_FIREBASE:
+                obs_count = len(smoothed)
+                closest_dist = closest_obs[1] if closest_obs else None
+                telem = {
+                    "direction":      voted_direction.upper(),
+                    "fps":            round(1.0 / np.mean(frame_times) if frame_times else 0.0, 1),
+                    "obstacle_count": obs_count,
+                    "obstacles":      [
+                        {"label": DISPLAY_NAME, "distance": round(closest_dist, 1)}
+                    ] if closest_dist else [],
+                    "status": {
+                        "camera": "Connected",
+                        "model":  "YOLOv8n ONNX",
+                        "server": "Active"
+                    }
+                }
+                firebase_cloud.push_telemetry(telem)
+
+                # Push danger alert when obstacle is critically close
+                if closest_dist is not None and closest_dist < 1.8:
+                    firebase_cloud.push_alert(
+                        alert_type="DANGER_OBSTACLE",
+                        reason=f"Direction={voted_direction} | Obs={obs_count} | Closest={closest_dist:.1f}m",
+                        free_ratio=0.0
+                    )
 
             # ── FPS tracking ───────────────────────
             t_frame_end = time.perf_counter()
             frame_times.append(t_frame_end - t_frame_start)
             fps = 1.0 / np.mean(frame_times) if frame_times else 0
 
-            # ── Debug output ───────────────────────
-            if self.debug:
-                n_obs = len(smoothed)
-                print(f"  FPS: {fps:4.1f} | Lat: {lat_ms:5.1f}ms | "
-                      f"Obs: {n_obs:2d} | Raw: {raw_direction:<12} | "
-                      f"Vote: {voted_direction}")
+            # ── System Metrics Reporting (5s) ──────
+            now = time.time()
+            if now - last_metrics_time >= 5.0:
+                last_metrics_time = now
+                cpu = psutil.cpu_percent()
+                ram = psutil.virtual_memory().percent
+                fb_qsize = firebase_cloud._write_queue.qsize() if (HAS_FIREBASE and firebase_cloud._write_queue is not None) else 0
+                avg_inf = np.mean(inf_times) if inf_times else 0.0
+                print(f"\n================ SYSTEM METRICS (5s) ================")
+                print(f"Camera FPS: {capture_thread.fps:.1f} | Inference FPS: {fps:.1f}")
+                print(f"CPU: {cpu}% | RAM: {ram}%")
+                print(f"Average Inference Time: {avg_inf*1000:.1f}ms")
+                print(f"Firebase Queue Length: {fb_qsize} | MQTT Queue Length: 0")
+                print(f"=====================================================\n")
+
+            # Yield CPU to target ~30 FPS
+            sleep_time = max(0.005, 0.033 - (time.perf_counter() - t_frame_start))
+            time.sleep(sleep_time)
 
         # Cleanup
+        capture_thread.running = False
+        capture_thread.join()
         self.cap.release()
         if not self._is_headless():
             import cv2
